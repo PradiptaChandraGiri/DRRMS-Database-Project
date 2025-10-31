@@ -1,0 +1,1232 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DRRMS - Disaster Resource & Relief Management System</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Lucide Icons for professional visuals -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        /* Define custom theme colors and typography for Tailwind */
+        :root {
+            --color-primary: #2563EB;
+            --color-secondary: #1E293B;
+            --color-success: #10B981;
+            --color-alert: #EF4444;
+            --color-warning: #F59E0B;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* FIX: Ensure the transition includes margin changes smoothly */
+        .sidebar-transition {
+            /* Keep all properties that change during transition */
+            transition: width 300ms ease-in-out, transform 300ms ease-in-out, margin-left 300ms ease-in-out;
+        }
+        /* Mobile overlay for the sidebar */
+        #mobile-overlay {
+            background-color: rgba(15, 23, 42, 0.8); /* slate-900/80 */
+        }
+    </style>
+</head>
+<body class="bg-gray-50 dark:bg-slate-900 text-slate-900 dark:text-gray-100 transition-colors duration-500 min-h-screen">
+
+    <div id="app-root" class="flex min-h-screen">
+        <!-- Application will be rendered here by JavaScript -->
+    </div>
+
+    <!-- Modals Container (Hidden by default) -->
+    <div id="modals-root"></div>
+
+    <script>
+        // --- Global Configuration & State ---
+
+        const ROLES = { ADMIN: 'ADMIN', VOLUNTEER: 'VOLUNTEER', CITIZEN: 'CITIZEN' };
+        
+        const COLORS = {
+            primary: 'bg-blue-600 hover:bg-blue-700',
+            success: 'bg-green-500',
+            alert: 'bg-red-500',
+            warning: 'bg-amber-500',
+            bgSoft: 'bg-gray-50 dark:bg-slate-900',
+        };
+        
+        const MOCK_VOLUNTEER_ID = 'V501'; // Mock ID for Volunteer Bob
+
+        let state = {
+            role: null, // null, ADMIN, VOLUNTEER, CITIZEN
+            currentPage: 'dashboard',
+            isDarkMode: localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches),
+            isSidebarOpen: window.innerWidth > 768, // Open by default on desktop
+            
+            // --- Mock Data ---
+            incidents: [
+                { id: 'I001', type: 'Flood', severity: 'Critical', description: 'Major flooding in downtown area.', location: '123 Main St', status: 'New', reporterId: 'C101', timestamp: Date.now() - 3600000 },
+                { id: 'I002', type: 'Earthquake Damage', severity: 'High', description: 'Structural damage reported near park.', location: '456 Oak Ave', status: 'Under-Review', reporterId: 'C102', timestamp: Date.now() - 7200000 },
+                { id: 'I003', type: 'Wildfire', severity: 'Medium', description: 'Small brush fire contained.', location: '789 Pine Ln', status: 'Resolved', reporterId: 'C103', timestamp: Date.now() - 10800000 },
+                { id: 'I004', type: 'Earthquake Damage', severity: 'High', description: 'Gas leak reported near school.', location: '789 School Road', status: 'New', reporterId: 'C104', timestamp: Date.now() - 500000 },
+                { id: 'I005', type: 'Medical Emergency', severity: 'Critical', description: 'Hospital overwhelmed.', location: 'City Center', status: 'New', reporterId: 'C105', timestamp: Date.now() - 100000 },
+            ],
+            resources: [
+                { id: 'R001', type: 'Water Bottles', available: 5000, dispatched: 1200, unit: 'bottles', location: 'Warehouse A' },
+                { id: 'R002', type: 'Medical Kits', available: 850, dispatched: 150, unit: 'kits', location: 'Depot B' },
+                { id: 'R003', type: 'Tents (Shelter)', available: 200, dispatched: 50, unit: 'units', location: 'Warehouse A' },
+            ],
+            requests: [
+                { id: 'Q001', resourceType: 'Water Bottles', quantity: 100, urgency: 'Urgent', location: '123 Main St', status: 'Assigned', assignedTo: MOCK_VOLUNTEER_ID, reporterId: 'C101' },
+                { id: 'Q002', resourceType: 'Medical Kits', quantity: 5, urgency: 'High', location: '456 Oak Ave', status: 'New', assignedTo: null, reporterId: 'C102' },
+                { id: 'Q003', resourceType: 'Tents (Shelter)', quantity: 20, urgency: 'Medium', location: '888 Park Blvd', status: 'Approved', assignedTo: null, reporterId: 'C103' },
+            ],
+            users: [
+                { id: 'U100', name: 'Admin User', role: ROLES.ADMIN, email: 'admin@drrms.org' },
+                { id: 'U101', name: 'Volunteer Alice', role: ROLES.VOLUNTEER, email: 'alice@drrms.org' },
+                { id: 'U102', name: 'Citizen Jane', role: ROLES.CITIZEN, email: 'jane@drrms.org' },
+                { id: MOCK_VOLUNTEER_ID, name: 'Volunteer Bob (V501)', role: ROLES.VOLUNTEER, email: 'bob@drrms.org' },
+                { id: 'V502', name: 'Volunteer Carol (V502)', role: ROLES.VOLUNTEER, email: 'carol@drrms.org' },
+            ],
+            systemSettings: {
+                incidentThreshold: 5,
+                notificationEmailDomain: '@drrms.org',
+                defaultVolunteerAssignment: 'Manual', // Changed to Manual for review page test
+                mapDefaultZoom: 12,
+            },
+        };
+
+        // --- Utility Functions ---
+
+        // Re-renders the entire application when state changes
+        function setState(newState) {
+            state = { ...state, ...newState };
+            renderApp();
+        }
+
+        // Simple ID Generator (simulating MongoDB object IDs)
+        const generateId = (prefix) => prefix + (Math.random() * 100000 | 0).toString().padStart(4, '0');
+
+        function getStatusColor(status) {
+            switch (status) {
+                case 'New':
+                case 'Critical':
+                case 'Pending':
+                    return 'bg-red-500';
+                case 'Under-Review':
+                case 'High':
+                case 'Assigned':
+                case 'En route':
+                case 'Medium':
+                    return 'bg-amber-500';
+                case 'Resolved':
+                case 'Actioned':
+                case 'Delivered':
+                case 'Approved':
+                    return 'bg-green-500';
+                case 'Declined':
+                    return 'bg-gray-500';
+                case 'ADMIN':
+                    return 'bg-red-600';
+                case 'VOLUNTEER':
+                    return 'bg-sky-600';
+                case 'CITIZEN':
+                    return 'bg-blue-600';
+                default:
+                    return 'bg-gray-500';
+            }
+        }
+
+        function StatusPill(status) {
+            return `<span class="${getStatusColor(status)} text-white text-xs font-semibold px-3 py-1 rounded-full uppercase tracking-wider shadow-md">${status}</span>`;
+        }
+        
+        function Card(title, content, className = '') {
+            const header = title ? `<h2 class="text-xl font-bold mb-4 text-slate-900 dark:text-gray-100 border-b pb-2 border-gray-200 dark:border-slate-700">${title}</h2>` : '';
+            return `
+                <div class="p-6 rounded-3xl shadow-xl border border-gray-100 dark:border-slate-800 dark:bg-slate-800/70 backdrop-blur-md transition duration-300 ease-in-out transform hover:shadow-xl hover:-translate-y-1 ${className}">
+                    ${header}
+                    ${content}
+                </div>
+            `;
+        }
+
+        function Button(text, color, iconName, onClickScript, className = '', type = 'button', disabled = false) {
+            const disabledClass = disabled ? 'opacity-50 cursor-not-allowed' : '';
+            const icon = iconName ? `<i data-lucide="${iconName}" class="w-5 h-5 inline mr-2"></i>` : '';
+            return `
+                <button 
+                    type="${type}" 
+                    onclick="${disabled ? '' : onClickScript}" 
+                    ${disabled ? 'disabled' : ''}
+                    class="${color} text-white font-medium py-2 px-4 rounded-xl shadow-lg focus:outline-none focus:ring-4 focus:ring-opacity-50 active:scale-95 transition duration-150 ${disabledClass} ${className}">
+                    ${icon}
+                    ${text}
+                </button>
+            `;
+        }
+        
+        function IconButton(iconName, onClickScript, className = '') {
+            return `
+                <button onclick="${onClickScript}" class="p-2 rounded-full text-slate-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-700 transition active:scale-95 ${className}">
+                    <i data-lucide="${iconName}" class="w-5 h-5"></i>
+                </button>
+            `;
+        }
+
+        // --- Core Application Logic / Mock API Handlers ---
+
+        function toggleDarkMode() {
+            const newMode = !state.isDarkMode;
+            
+            // FIX: Ensure the HTML root element class is updated immediately
+            if (newMode) {
+                document.documentElement.classList.add('dark');
+                document.documentElement.classList.remove('light');
+                localStorage.setItem('theme', 'dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+                document.documentElement.classList.add('light');
+                localStorage.setItem('theme', 'light');
+            }
+            
+            setState({ isDarkMode: newMode });
+        }
+
+        function handleLogout() {
+            // FIX: Direct state reset to avoid browser dialog issues
+            setState({ role: null, currentPage: 'dashboard', isSidebarOpen: window.innerWidth > 768 });
+        }
+
+        function navigateTo(pageKey) {
+            setState({ currentPage: pageKey });
+        }
+        
+        function toggleSidebar() {
+            setState({ isSidebarOpen: !state.isSidebarOpen });
+        }
+
+        // Incident status update (Admin) 
+        function updateIncidentStatus(id, newStatus) {
+            const newIncidents = state.incidents.map(i => 
+                i.id === id ? { ...i, status: newStatus } : i
+            );
+            setState({ incidents: newIncidents });
+        }
+        
+        // NEW: Update Request Status (Volunteer/Admin)
+        function updateRequestStatus(requestId, newStatus) {
+            const newRequests = state.requests.map(req => 
+                req.id === requestId ? { ...req, status: newStatus } : req
+            );
+            setState({ requests: newRequests });
+        }
+
+
+        // NEW: Add New Resource Type (Admin)
+        function addResource(form) {
+            const resource = {
+                ...form,
+                id: generateId('R'),
+                dispatched: 0,
+                available: parseInt(form.available) || 0,
+            };
+            setState({ resources: [resource, ...state.resources] });
+            console.log("[API MOCK] New resource added:", resource);
+        }
+
+        // NEW: Update Stock for Existing Resource (Admin)
+        function updateResourceStock(id, changeAmount) {
+            const newResources = state.resources.map(res => 
+                res.id === id 
+                    ? { ...res, available: Math.max(0, res.available + changeAmount) } 
+                    : res
+            );
+            setState({ resources: newResources });
+            console.log(`[API MOCK] Resource ${id} stock changed by ${changeAmount}`);
+        }
+
+        // NEW: Add New User (Admin)
+        function addUser(form) {
+            const user = { ...form, id: generateId('U') };
+            setState({ users: [...state.users, user] });
+            console.log(`[API MOCK] New ${user.role} user created: ${user.name}.`);
+        }
+        
+        // NEW: Update System Settings (Admin)
+        function updateSystemSettings(newSettings) {
+            setState({ systemSettings: newSettings });
+            console.log("[API MOCK] System settings updated:", newSettings);
+        }
+
+        // --- Relief Request Management (Admin) ---
+        function updateRequestReview(requestId, newStatus) {
+            const newRequests = state.requests.map(req => 
+                req.id === requestId ? { ...req, status: newStatus, assignedTo: null } : req
+            );
+            setState({ requests: newRequests });
+        }
+
+        function assignVolunteer(requestId, volunteerId) {
+            const newRequests = state.requests.map(req => 
+                req.id === requestId ? { ...req, assignedTo: volunteerId, status: 'Assigned' } : req
+            );
+            setState({ requests: newRequests });
+        }
+        
+        // --- Component Rendering Functions (Mirroring React structure) ---
+
+        // 1. LOGIN SCREEN
+        function renderLoginScreen() {
+            // New academic information to be displayed
+            const academicInfo = `
+                <div class="mt-8 text-center text-xs text-slate-500 dark:text-slate-400 border-t pt-4 border-gray-300 dark:border-slate-700">
+                    <p class="font-bold mb-1">Developed for Database Engineering Project</p>
+                    <p>Name: Pradipta Chandra Giri</p>
+                    <p>Roll No: 2402110050 | Group: CSE A1</p>
+                </div>
+            `;
+
+            return Card("DRRMS Login", `
+                <h3 class="text-2xl font-bold text-center mb-6 text-blue-600">Disaster Resource Management</h3>
+                
+                <p class="text-sm text-center mb-4 text-slate-600 dark:text-gray-400">
+                    Admin/Volunteer access requires Google OAuth:
+                </p>
+                <div class="space-y-4 mb-8">
+                    ${Button("Login as Administrator (Google)", "bg-red-600 hover:bg-red-700", "zap", "setState({ role: ROLES.ADMIN })", "w-full")}
+                    ${Button("Login as Field Volunteer (Google)", "bg-sky-600 hover:bg-sky-700", "users", "setState({ role: ROLES.VOLUNTEER })", "w-full")}
+                </div>
+
+                <div class="flex items-center my-6">
+                    <hr class="flex-grow border-gray-300 dark:border-slate-700" />
+                    <span class="px-3 text-sm font-medium text-slate-500 dark:text-slate-400">OR CITIZEN LOGIN</span>
+                    <hr class="flex-grow border-gray-300 dark:border-slate-700" />
+                </div>
+
+                <form id="citizen-login-form" class="space-y-4">
+                    <input type="email" id="citizen-email" placeholder="Citizen Email (e.g., citizen@drrms.org)" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-700 dark:text-white" required />
+                    <input type="password" id="citizen-password" placeholder="Password" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-700 dark:text-white" required />
+                    ${Button("Login as Citizen", COLORS.primary, "home", "handleCitizenLogin(event)", "w-full", "submit")}
+                    <p class="text-center text-sm text-slate-500 dark:text-slate-400 mt-4">
+                        <a href="#" class="text-blue-600 hover:underline">Forgot Password?</a> | <a href="#" class="text-blue-600 hover:underline">Sign Up</a>
+                    </p>
+                </form>
+            ` + academicInfo, 'w-full max-w-lg');
+        }
+
+        function handleCitizenLogin(event) {
+            event.preventDefault();
+            const email = document.getElementById('citizen-email').value;
+            const password = document.getElementById('citizen-password').value;
+            if (email && password) {
+                setState({ role: ROLES.CITIZEN });
+            }
+        }
+
+        // 2. SIDEBAR NAVIGATION
+        function renderSidebar() {
+            const roleNav = {
+                [ROLES.ADMIN]: [
+                    { name: 'Dashboard', icon: 'home', page: 'dashboard' },
+                    { name: 'Live Map', icon: 'map', page: 'live_map' },
+                    { name: 'Resource Inventory', icon: 'package', page: 'resource_inventory' },
+                    { name: 'Relief Requests', icon: 'truck', page: 'relief_requests' },
+                    { name: 'User Management', icon: 'users', page: 'user_management' },
+                    { name: 'Reports & Analytics', icon: 'clipboard-list', page: 'analytics_dashboard' }, // RENAMED
+                    { name: 'System Settings', icon: 'settings', page: 'settings' },
+                ],
+                [ROLES.VOLUNTEER]: [
+                    { name: 'Dashboard', icon: 'home', page: 'dashboard' },
+                    { name: 'Assigned Requests', icon: 'clipboard-list', page: 'assigned_requests' },
+                    { name: 'Active Incidents', icon: 'alert-triangle', page: 'active_incidents' },
+                ],
+                [ROLES.CITIZEN]: [
+                    { name: 'Dashboard', icon: 'home', page: 'dashboard' },
+                    { name: 'Report Incident', icon: 'alert-triangle', page: 'report_incident' },
+                    { name: 'Request Relief', icon: 'package', page: 'request_relief' },
+                    { name: 'My Activity', icon: 'clipboard-list', page: 'my_activity' },
+                ]
+            };
+            
+            const navItems = (roleNav[state.role] || []).map(item => `
+                <a href="#" onclick="navigateTo('${item.page}')" title="${item.name}" class="flex items-center px-4 py-3 rounded-xl transition duration-150 space-x-3 ${state.currentPage === item.page ? 'bg-blue-600/10 text-blue-600 dark:bg-blue-800/30 dark:text-white font-bold' : 'text-slate-700 dark:text-gray-300 hover:bg-blue-50 dark:hover:bg-slate-800'} ${state.isSidebarOpen ? '' : 'md:justify-center md:px-2'}">
+                    <i data-lucide="${item.icon}" class="w-5 h-5 flex-shrink-0"></i>
+                    <span class="transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden'}">${item.name}</span>
+                </a>
+            `).join('');
+
+            const sidebarClass = state.isSidebarOpen ? 'w-64 translate-x-0' : 'w-0 -translate-x-full md:w-16';
+            const innerClass = state.isSidebarOpen ? 'w-64' : 'w-16';
+
+            return `
+                <!-- Mobile Overlay Backdrop -->
+                <div id="mobile-overlay" class="fixed inset-0 z-40 bg-slate-900/50 backdrop-blur-sm md:hidden ${state.isSidebarOpen ? '' : 'hidden'}" onclick="toggleSidebar()"></div>
+
+                <!-- Sidebar Structure -->
+                <aside 
+                    class="fixed top-0 left-0 h-full z-50 sidebar-transition md:translate-x-0 md:h-screen md:sticky md:flex-shrink-0 bg-white dark:bg-slate-900 border-r border-gray-200 dark:border-slate-800 shadow-xl ${sidebarClass}"
+                >
+                    <div class="h-full flex flex-col p-4 sidebar-transition ${innerClass}">
+                        
+                        <!-- Header (Logo/Toggle) -->
+                        <div class="flex justify-between items-center h-16 mb-6">
+                            <div class="flex items-center overflow-hidden transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:opacity-100 md:justify-center'}">
+                                <i data-lucide="zap" class="w-8 h-8 text-blue-600 mr-2 flex-shrink-0"></i>
+                                <span class="text-2xl font-black text-slate-900 dark:text-white tracking-tight ${state.isSidebarOpen ? '' : 'md:hidden'}">DRRMS</span>
+                            </div>
+                            <button onclick="toggleSidebar()" class="text-slate-600 dark:text-gray-300 p-2 rounded-full hover:bg-gray-200 dark:hover:bg-slate-700 ${state.isSidebarOpen ? '' : 'hidden'} md:hidden">
+                                <i data-lucide="x" class="w-6 h-6"></i>
+                            </button>
+                        </div>
+
+                        <!-- Navigation Menu -->
+                        <nav class="flex-grow space-y-2">
+                            ${navItems}
+                        </nav>
+
+                        <!-- Footer / Role Info -->
+                        <div class="mt-8 border-t border-gray-200 dark:border-slate-800 pt-4 text-sm">
+                            <p class="font-medium transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden'}">
+                                ${state.role} Access
+                            </p>
+                            <p class="text-xs text-slate-500 dark:text-slate-400 transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden'}">
+                                Version 1.0.0
+                            </p>
+                        </div>
+                    </div>
+                </aside>
+            `;
+        }
+
+        // 3. HEADER
+        function renderHeader() {
+            const roleName = { ADMIN: 'Administrator', VOLUNTEER: 'Volunteer', CITIZEN: 'Citizen' }[state.role];
+            const iconToggle = state.isDarkMode ? 'sun' : 'moon';
+            const iconSidebar = state.isSidebarOpen ? 'chevron-left' : 'menu';
+
+            return `
+                <header class="sticky top-0 z-30 shadow-md bg-white/90 dark:bg-slate-900/90 backdrop-blur-md sidebar-transition">
+                    <div class="flex justify-between items-center h-16 px-4 sm:px-6 lg:px-8">
+                        
+                        <!-- Mobile Logo and Sidebar Toggle -->
+                        <div class="flex items-center space-x-3 md:hidden">
+                            ${IconButton(state.isSidebarOpen ? 'x' : 'menu', 'toggleSidebar()', 'md:p-3')}
+                            <span class="text-xl font-black text-slate-900 dark:text-white tracking-tight">DRRMS</span>
+                        </div>
+
+                        <!-- Desktop Sidebar Toggle -->
+                        <div class="hidden md:block">
+                            ${IconButton(iconSidebar, 'toggleSidebar()', 'p-3 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700/50')}
+                        </div>
+                        
+                        <!-- User Info & Actions (Right side) -->
+                        <div class="flex items-center space-x-2">
+                            <span class="hidden sm:inline text-sm font-medium text-slate-700 dark:text-gray-300 mr-2">${roleName}</span>
+                            ${IconButton(iconToggle, 'toggleDarkMode()', 'hidden sm:flex')}
+                            ${IconButton('log-out', 'handleLogout()', 'text-red-500 hover:bg-red-100 dark:hover:bg-slate-700/50')}
+                        </div>
+                    </div>
+                </header>
+            `;
+        }
+
+        // 4. MAIN CONTENT ROUTER
+        function renderMainContent() {
+            const contentMap = {
+                // Admin Pages
+                'dashboard': renderAdminDashboard,
+                'live_map': renderLiveMap,
+                'resource_inventory': renderResourceInventory,
+                'relief_requests': renderAdminReliefRequests, 
+                'user_management': renderUserManagement,
+                'analytics_dashboard': renderAnalyticsDashboard, // NEW ROUTE
+                'reports': renderReportsPage, // Kept for simplicity, but main analytics moved
+                'settings': renderSystemSettings,
+
+                // Volunteer Pages
+                'assigned_requests': renderVolunteerAssignedRequests, 
+                'active_incidents': renderVolunteerIncidents,
+
+                // Citizen Pages
+                'report_incident': renderCitizenReportPage,
+                'request_relief': renderCitizenReliefRequestPage,
+                'my_activity': () => `<h1 class="p-4 sm:p-6 lg:p-8 w-full text-2xl dark:text-white">Citizen Activity History (Placeholder)</h1>`,
+            };
+
+            const renderer = contentMap[state.currentPage] || (() => `<p class="text-center p-8 dark:text-white">Page Not Found</p>`);
+            
+            // FIX: Adjust margin based on sidebar state for desktop (md:)
+            const mainContentClass = state.isSidebarOpen ? 'md:ml-64' : 'md:ml-16';
+
+            return `
+                <div class="flex-1 flex flex-col min-h-screen sidebar-transition ${mainContentClass}">
+                    ${renderHeader()}
+                    <main class="flex-1 pb-12">
+                        ${renderer()}
+                    </main>
+                    <footer class="w-full text-center text-xs p-4 border-t border-gray-200 dark:border-slate-800 dark:text-slate-500">
+                        DRRMS | Disaster Resource & Relief Management System | 2025. Accessible & Performant.
+                    </footer>
+                </div>
+            `;
+        }
+        
+        // --- Dashboard and Page Implementations (HTML Templates) ---
+
+        // ADMIN PAGES
+        function renderAdminDashboard() {
+            const totalIncidents = state.incidents.length;
+            const newIncidents = state.incidents.filter(i => i.status === 'New').length;
+            const openRequests = state.requests.filter(q => q.status === 'New' || q.status === 'Approved' || q.status === 'Assigned' || q.status === 'En route').length;
+            const criticalResources = state.resources.filter(r => r.available < 500).length;
+            
+            const incidentItems = state.incidents.filter(i => i.status !== 'Resolved').map(incident => `
+                <div class="flex justify-between items-center p-3 rounded-lg border dark:border-slate-700 bg-white dark:bg-slate-700/50">
+                    <div class="flex items-center space-x-3">
+                        <i data-lucide="alert-triangle" class="w-5 h-5 ${getStatusColor(incident.status).replace('bg', 'text')}"></i>
+                        <div>
+                            <p class="font-semibold">${incident.type} - ${incident.location}</p>
+                            <p class="text-xs text-slate-500 dark:text-gray-400">${incident.description}</p>
+                        </div>
+                    </div>
+                    ${StatusPill(incident.status)}
+                    ${Button(incident.status === 'New' ? 'Review' : 'Resolve', COLORS.primary, '', `updateIncidentStatus('${incident.id}', '${incident.status === 'New' ? 'Under-Review' : 'Resolved'}')`, 'text-sm py-1 px-3 ml-4')}
+                </div>
+            `).join('');
+
+            // --- PROFESSIONAL FEATURE: LOW RESOURCE ALERT ---
+            const lowResourceAlert = criticalResources > 0 ? `
+                <div class="p-4 bg-red-100 dark:bg-red-900/50 border-l-4 border-red-500 rounded-xl mb-6 flex items-center space-x-3 shadow-lg">
+                    <i data-lucide="alert-triangle" class="w-6 h-6 text-red-500 flex-shrink-0"></i>
+                    <p class="text-sm text-red-700 dark:text-red-300 font-medium">
+                        URGENT: ${criticalResources} resource type(s) are critically low (below 500 units). Check the <a href="#" onclick="navigateTo('resource_inventory')" class="underline">Resource Inventory</a> now.
+                    </p>
+                </div>
+            ` : '';
+
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 space-y-8 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Admin Overview</h1>
+                    
+                    ${lowResourceAlert}
+
+                    <!-- Key Metrics Cards -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                        ${Card("Total Incidents", `<p class="text-4xl font-extrabold text-blue-600">${totalIncidents}</p>`, "border-t-4 border-blue-600")}
+                        ${Card("Urgent New Incidents", `<p class="text-4xl font-extrabold text-red-500">${newIncidents}</p>`, "border-t-4 border-red-500")}
+                        ${Card("Open Relief Requests", `<p class="text-4xl font-extrabold text-amber-500">${openRequests}</p>`, "border-t-4 border-amber-500")}
+                        ${Card("Low Resources Stock", `<p class="text-4xl font-extrabold text-green-500">${criticalResources}</p>`, "border-t-4 border-green-500")}
+                    </div>
+                    
+                    <!-- Dashboard Quick Action Analytics (Replaced by dedicated page, kept simple link) -->
+                    <h2 class="text-2xl font-bold text-slate-900 dark:text-white pt-4">Quick Insights</h2>
+                    ${Card("Incident and Resource Analysis", `
+                        <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">A high-level overview of system status. For detailed charts, visit the dedicated Analytics Dashboard.</p>
+                        ${Button("Go to Analytics Dashboard", COLORS.primary, 'trending-up', "navigateTo('analytics_dashboard')")}
+                    `)}
+                    
+                    <!-- Live Incident Map (Simulated) -->
+                    ${Card("Active Incident Map (Simulated)", `
+                        <div class="h-full flex flex-col space-y-2 overflow-y-auto">
+                            ${incidentItems}
+                        </div>
+                    `, "h-96")}
+                </div>
+            `;
+        }
+        
+        // --- NEW: ANALYTICS DASHBOARD IMPLEMENTATION ---
+        function renderAnalyticsDashboard() {
+            // Data Prep for charts
+            const incidentsByStatus = state.incidents.reduce((acc, i) => {
+                acc[i.status] = (acc[i.status] || 0) + 1;
+                return acc;
+            }, {});
+            const totalIncidentsCount = state.incidents.length;
+
+            const dispatchData = [
+                { month: 'Jan', dispatched: 1200 },
+                { month: 'Feb', dispatched: 1500 },
+                { month: 'Mar', dispatched: 1300 },
+                { month: 'Apr', dispatched: 2000 },
+                { month: 'May', dispatched: 2500 },
+            ];
+            const maxDispatched = Math.max(...dispatchData.map(d => d.dispatched));
+
+            // Chart 1: Incident Status Distribution (Bar Chart)
+            const statusChart = Object.entries(incidentsByStatus).map(([status, count]) => {
+                const percentage = totalIncidentsCount > 0 ? Math.round((count / totalIncidentsCount) * 100) : 0;
+                const color = getStatusColor(status);
+                return `
+                    <div class="flex items-center space-x-3 py-1">
+                        <span class="w-24 text-sm font-medium dark:text-gray-300">${status}</span>
+                        <div class="flex-grow h-6 rounded-lg ${color} shadow-md" style="width: ${percentage}%;">
+                            <span class="text-xs text-white pl-2 leading-6">${count} (${percentage}%)</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // Chart 2: Monthly Dispatch Trend (Curve Graph Simulation)
+            const trendChart = `
+                <div class="flex justify-between items-end h-48 p-2 border-l border-b border-gray-300 dark:border-slate-600">
+                    ${dispatchData.map(d => {
+                        const height = (d.dispatched / maxDispatched) * 90 + 10; // Scale height (min 10% for visual)
+                        return `
+                            <div class="flex flex-col items-center justify-end h-full">
+                                <div class="w-3 h-3 rounded-full bg-blue-600 mb-1 shadow-lg" style="margin-bottom: ${height/2}%;"></div>
+                                <div class="text-xs text-slate-500 dark:text-gray-400 font-medium">${d.month}</div>
+                            </div>
+                        `;
+                    }).join('')}
+                    <!-- Connecting line simulation -->
+                    <div class="absolute inset-0 h-48 w-full">
+                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="w-full h-full" style="opacity: 0.7;">
+                            <polyline fill="none" stroke="#2563EB" stroke-width="2" points="${dispatchData.map((d, i) => {
+                                const x = (i / (dispatchData.length - 1)) * 100;
+                                const y = 100 - ((d.dispatched / maxDispatched) * 90 + 10);
+                                return `${x},${y}`;
+                            }).join(' ')}" />
+                        </svg>
+                    </div>
+                </div>
+                <p class="text-center text-xs text-slate-500 dark:text-gray-400 mt-2">Simulated Resource Dispatch Volume Over Time (Units)</p>
+            `;
+            
+            // Chart 3: Volunteer Activity (Doughnut/Ring Chart Simulation)
+            const totalVolunteers = state.users.filter(u => u.role === ROLES.VOLUNTEER).length;
+            const activeVolunteers = Math.round(totalVolunteers * 0.75); // Mock 75% active
+            const inactiveVolunteers = totalVolunteers - activeVolunteers;
+            const activePercentage = totalVolunteers > 0 ? Math.round((activeVolunteers / totalVolunteers) * 100) : 0;
+
+            const ringChart = `
+                <div class="flex items-center justify-center h-48">
+                    <div class="relative w-32 h-32 rounded-full border-8 border-gray-300 dark:border-slate-700">
+                        <div class="absolute inset-0 flex items-center justify-center text-center">
+                            <span class="text-3xl font-bold text-blue-600">${activePercentage}%</span>
+                        </div>
+                        <style>
+                            /* Simple conic gradient to simulate ring chart fill */
+                            .ring-chart {
+                                background: conic-gradient(#2563EB 0% ${activePercentage}%, #475569 ${activePercentage}% 100%);
+                            }
+                        </style>
+                        <div class="ring-chart w-full h-full rounded-full border-4 border-slate-900/50"></div>
+                    </div>
+                </div>
+                <ul class="text-sm space-y-2 mt-4">
+                    <li class="flex justify-between dark:text-gray-300">Active Volunteers: <span class="font-bold text-green-500">${activeVolunteers}</span></li>
+                    <li class="flex justify-between dark:text-gray-300">Total Volunteers: <span class="font-bold">${totalVolunteers}</span></li>
+                </ul>
+            `;
+
+
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Strategic Analytics Dashboard</h1>
+                    <p class="text-slate-600 dark:text-gray-400">Deep-dive analysis of incident response, resource utilization, and team performance.</p>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        ${Card("Incident Status Breakdown", `
+                            <div class="space-y-2 py-4">
+                                ${statusChart}
+                            </div>
+                        `, "lg:col-span-1")}
+
+                        ${Card("Monthly Resource Dispatch Trend", `
+                            <div class="relative w-full h-64 mt-4">
+                                ${trendChart}
+                            </div>
+                        `, "lg:col-span-2")}
+                    </div>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        ${Card("Volunteer Activity Ratio", `
+                            <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Percentage of volunteers actively logging assignments.</p>
+                            ${ringChart}
+                        `, "lg:col-span-1")}
+
+                        ${Card("Average Resolution Time (Simulated)", `
+                            <div class="flex flex-col items-center justify-center h-48">
+                                <span class="text-6xl font-extrabold text-green-500">4.2</span>
+                                <span class="text-lg dark:text-gray-300 mt-2">Hours</span>
+                                <p class="text-xs text-slate-500 dark:text-gray-400 mt-2">Target: 5.0 Hours</p>
+                            </div>
+                        `, "lg:col-span-1")}
+                        
+                        ${Card("Report Generation & Export", `
+                            <p class="text-sm dark:text-gray-300 mb-4">Generate comprehensive historical reports for regulatory compliance and audit purposes.</p>
+                            <div class="space-y-3 pt-4">
+                                ${Button("Generate Quarterly Report", "bg-slate-600 hover:bg-slate-700", "file-text", "console.log('Generating Quarterly Report')", "w-full")}
+                                ${Button("Export Raw Data (CSV)", "bg-slate-600 hover:bg-slate-700", "download", "console.log('Exporting CSV')", "w-full")}
+                            </div>
+                        `, "lg:col-span-1")}
+                    </div>
+                </div>
+            `;
+        }
+
+        // NEW: ADMIN RELIEF REQUESTS REVIEW PAGE
+        function renderAdminReliefRequests() {
+            const volunteers = state.users.filter(u => u.role === ROLES.VOLUNTEER);
+            const requestItems = state.requests.map(req => {
+                const isNew = req.status === 'New';
+                const isApproved = req.status === 'Approved' || req.status === 'Assigned' || req.status === 'En route';
+                const assignedVolunteer = req.assignedTo ? volunteers.find(v => v.id === req.assignedTo)?.name || 'Unknown' : 'Unassigned';
+
+                return `
+                    <div class="p-4 border rounded-xl dark:border-slate-700 bg-white dark:bg-slate-700/50 space-y-3">
+                        <div class="flex justify-between items-start">
+                            <div class="space-y-1">
+                                <p class="font-bold text-lg">${req.resourceType} (x${req.quantity})</p>
+                                <p class="text-sm text-slate-600 dark:text-gray-400">Location: ${req.location} | Urgency: ${req.urgency}</p>
+                            </div>
+                            ${StatusPill(req.status)}
+                        </div>
+                        
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between pt-2 border-t dark:border-slate-800">
+                            <p class="text-sm text-slate-600 dark:text-gray-300 mb-2 sm:mb-0">
+                                Assigned: <strong>${assignedVolunteer}</strong>
+                            </p>
+                            
+                            <div class="flex space-x-2 flex-wrap">
+                                ${isNew ? Button("Approve", COLORS.success, 'check', `updateRequestReview('${req.id}', 'Approved')`, 'text-xs') : ''}
+                                ${isNew ? Button("Decline", COLORS.alert, 'x', `updateRequestReview('${req.id}', 'Declined')`, 'text-xs') : ''}
+                                
+                                ${isApproved && req.status !== 'Assigned' && req.status !== 'En route' ? `
+                                    <form onsubmit="handleModalFormSubmit(event, 'assignVolunteer', '${req.id}')" class="flex space-x-1">
+                                        <select name="volunteerId" class="p-1 border dark:border-slate-600 rounded-lg text-sm dark:bg-slate-800 dark:text-white" required>
+                                            <option value="">Assign...</option>
+                                            ${volunteers.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}
+                                        </select>
+                                        ${Button("Assign", COLORS.primary, 'user-check', '', 'text-xs', 'submit')}
+                                    </form>
+                                ` : isApproved ? StatusPill(req.status) : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Relief Requests Review</h1>
+                    ${Card("Open Requests & Allocation", `
+                        <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Review requests before assigning resources to volunteers.</p>
+                        <div class="space-y-4">
+                            ${requestItems.length > 0 ? requestItems : '<p class="text-slate-500 dark:text-gray-400">No new or open requests needing review.</p>'}
+                        </div>
+                    `)}
+                </div>
+            `;
+        }
+
+
+        function renderResourceInventory() {
+            // See function below for modal logic handlers
+            
+            const resourceRows = state.resources.map(r => `
+                <tr class="hover:bg-gray-50 dark:hover:bg-slate-800">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900 dark:text-white">${r.type}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${r.available} ${r.unit}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${r.dispatched} ${r.unit}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${r.location}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        ${Button("Update Stock", COLORS.primary, '', `showUpdateStockModal('${r.id}')`, 'text-xs py-1 px-2')}
+                    </td>
+                </tr>
+            `).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Resource Inventory Management</h1>
+                    ${Button("Add New Resource Type", COLORS.primary, 'package', 'showAddResourceModal()')}
+
+                    ${Card("Resource Stock Overview", `
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full divide-y divide-gray-200 dark:divide-slate-700">
+                                <thead class="bg-gray-50 dark:bg-slate-700">
+                                    <tr>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Resource Type</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Available Stock</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Dispatched</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Location</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-200 dark:divide-slate-700">
+                                    ${resourceRows}
+                                </tbody>
+                            </table>
+                        </div>
+                    `)}
+                </div>
+            `;
+        }
+        
+        function renderUserManagement() {
+            const sortedUsers = [...state.users].sort((a, b) => a.role.localeCompare(b.role));
+            const userList = sortedUsers.map(user => `
+                <li class="flex justify-between items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700/50 transition">
+                    <div>
+                        <p class="font-semibold text-sm">${user.name}</p>
+                        <p class="text-xs text-slate-500 dark:text-gray-400">${user.email}</p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        ${StatusPill(user.role)}
+                        ${IconButton('settings', `console.log('Edit user ${user.id}')`, 'text-sm')}
+                    </div>
+                </li>
+            `).join('');
+            
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">User and Role Management</h1>
+                    ${Button("Add New System User", COLORS.primary, 'users', 'showAddUserModal()')}
+
+                    ${Card("System User List", `<ul class="mt-4 space-y-3 divide-y divide-gray-200 dark:divide-slate-700">${userList}</ul>`)}
+                </div>
+            `;
+        }
+        
+        // Old Reports Page is now Analytics Dashboard
+        function renderReportsPage() {
+             return `
+                <div class="p-4 sm:p-6 lg:p-8 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Reports & Analytics (Legacy)</h1>
+                    ${Card("Operational Performance Report", `
+                        <p class="dark:text-gray-300">This page is reserved for static report generation. Please use the <a href="#" onclick="navigateTo('analytics_dashboard')" class="underline text-blue-500">Analytics Dashboard</a> for interactive charts.</p>
+                        
+                        <div class="flex space-x-4 mt-4">
+                            ${Button("Export Audit Report", "bg-slate-600 hover:bg-slate-700", "clipboard-list", "console.log('Export Audit Report')")}
+                        </div>
+                    `, "mt-6 space-y-4")}
+                </div>
+            `;
+        }
+
+        function renderLiveMap() {
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Live Operations Map</h1>
+                    ${Card("Real-time Incident & Resource Visualization", `
+                        <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-slate-700">
+                            <p class="text-sm dark:text-gray-400">Map shows ${state.incidents.filter(i => i.status !== 'Resolved').length} active incidents.</p>
+                            <div class="flex space-x-2">
+                                <span class="flex items-center text-xs dark:text-gray-400"><span class="w-3 h-3 bg-red-500 rounded-full mr-1"></span> Critical</span>
+                                <span class="flex items-center text-xs dark:text-gray-400"><span class="w-3 h-3 bg-amber-500 rounded-full mr-1"></span> In-Progress</span>
+                            </div>
+                        </div>
+                        <div class="flex-grow bg-gray-300 dark:bg-slate-800 rounded-xl flex items-center justify-center text-slate-500 h-full">
+                            [Placeholder: Google Maps/Leaflet Component Showing Incident Markers and Resource Hubs]
+                        </div>
+                    `, "mt-6 h-[70vh] flex flex-col")}
+                </div>
+            `;
+        }
+
+        function renderSystemSettings() {
+            const currentSettings = state.systemSettings;
+            
+            // This is complex. We'll rely on an event listener attached after render for form submission.
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">System Settings</h1>
+                    ${Card("Operational Configuration", `
+                        <form id="settings-form" class="space-y-6">
+                            <div>
+                                <label class="block text-sm font-medium dark:text-gray-300">High-Priority Incident Threshold</label>
+                                <input type="number" min="1" name="incidentThreshold" value="${currentSettings.incidentThreshold}" class="w-full mt-1 p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" />
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Number of "New" incidents required to trigger a major system alert.</p>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium dark:text-gray-300">Authorized Volunteer Email Domain</label>
+                                <input type="text" name="notificationEmailDomain" value="${currentSettings.notificationEmailDomain}" class="w-full mt-1 p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" />
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Only users with this domain can use Google OAuth for Admin/Volunteer roles.</p>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium dark:text-gray-300">Default Request Assignment Mode</label>
+                                <select name="defaultVolunteerAssignment" class="w-full mt-1 p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white">
+                                    <option value="Auto-Assign" ${currentSettings.defaultVolunteerAssignment === 'Auto-Assign' ? 'selected' : ''}>Auto-Assign (Algorithm based)</option>
+                                    <option value="Manual" ${currentSettings.defaultVolunteerAssignment === 'Manual' ? 'selected' : ''}>Manual (Admin must approve and assign)</option>
+                                </select>
+                            </div>
+
+                            ${Button("Save System Settings", COLORS.primary, "settings", "handleSettingsSubmit(event)", "w-full", "submit")}
+                        </form>
+                    `)}
+                </div>
+            `;
+        }
+
+        // VOLUNTEER PAGES
+
+        // NEW: Function for Volunteer Assigned Requests
+        function renderVolunteerAssignedRequests() {
+            const assignedRequests = state.requests.filter(q => q.assignedTo === MOCK_VOLUNTEER_ID && q.status !== 'Delivered' && q.status !== 'Declined');
+            const requestItems = assignedRequests.map(req => {
+                const isEnRoute = req.status === 'En route';
+                
+                return `
+                    <div class="p-4 border rounded-xl dark:border-slate-700 bg-white dark:bg-slate-700/50 space-y-3">
+                        <div class="flex justify-between items-start">
+                            <div class="space-y-1">
+                                <p class="font-bold text-lg">${req.resourceType} (x${req.quantity})</p>
+                                <p class="text-sm text-slate-600 dark:text-gray-400">Delivery Location: <strong>${req.location}</strong></p>
+                            </div>
+                            ${StatusPill(req.status)}
+                        </div>
+                        
+                        <div class="flex space-x-2 pt-2 border-t dark:border-slate-800">
+                            ${Button("Mark En Route", COLORS.warning, 'route', `updateRequestStatus('${req.id}', 'En route')`, 'text-xs', 'button', isEnRoute)}
+                            ${Button("Mark Delivered", COLORS.success, 'check-circle', `updateRequestStatus('${req.id}', 'Delivered')`, 'text-xs', 'button', !isEnRoute)}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">My Assigned Deliveries</h1>
+                    ${Card("Tasks Awaiting Fulfillment (Volunteer ${MOCK_VOLUNTEER_ID})", `
+                        <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Complete these tasks in the field, updating the status as you progress.</p>
+                        <div class="space-y-4">
+                            ${requestItems.length > 0 ? requestItems : '<p class="text-slate-500 dark:text-gray-400">No active delivery requests currently assigned.</p>'}
+                        </div>
+                    `)}
+                </div>
+            `;
+        }
+        
+        function renderVolunteerDashboard() {
+            // Using the new functional list directly on the dashboard
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 space-y-8 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Volunteer Field Dashboard</h1>
+                    
+                    ${Card("Assigned Delivery Tasks (Immediate Focus)", `
+                        ${renderVolunteerAssignedRequests().replace(/<h1[^>]*>.*?<\/h1>/, '')}
+                    `, "space-y-4")}
+
+                    ${Card("Active Incidents in My Area (For Awareness)", `
+                        ${renderVolunteerIncidents().replace(/<h1[^>]*>.*?<\/h1>/, '')}
+                    `, "space-y-4")}
+                </div>
+            `;
+        }
+
+
+        function renderVolunteerIncidents() {
+            const activeIncidents = state.incidents.filter(i => i.status === 'New' || i.status === 'Under-Review');
+            const incidentItems = activeIncidents.map(incident => `
+                <div class="flex justify-between items-start p-3 border rounded-xl dark:border-slate-700 hover:shadow-md transition">
+                    <div>
+                        <p class="font-semibold text-sm">${incident.type} - ${incident.location}</p>
+                        <p class="text-xs text-slate-500 dark:text-gray-400 mt-1">${incident.description}</p>
+                    </div>
+                    ${StatusPill(incident.status)}
+                </div>
+            `).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 w-full">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Active Incidents</h1>
+                    ${Card("Current Situational Awareness", `
+                        ${activeIncidents.length === 0 
+                            ? '<p class="text-slate-500 dark:text-gray-400">No new or under-review incidents currently reported.</p>'
+                            : incidentItems
+                        }
+                    `, "mt-6 space-y-4")}
+                </div>
+            `;
+        }
+
+        // CITIZEN PAGES
+        function renderCitizenReportPage() {
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 max-w-lg mx-auto">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white mb-6">Report New Emergency Incident</h1>
+                    ${Card("Disaster Report Form", `
+                        <form id="incident-report-form" class="space-y-4">
+                            <select name="type" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required>
+                                <option value="">Select Incident Type</option>
+                                <option value="Flood">Flood</option>
+                                <option value="Earthquake Damage">Earthquake Damage</option>
+                                <option value="Wildfire">Wildfire</option>
+                                <option value="Medical Emergency">Medical Emergency</option>
+                                <option value="Structural Failure">Structural Failure</option>
+                            </select>
+                            <select name="severity" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white">
+                                <option value="Critical">Critical</option>
+                                <option value="High">High</option>
+                                <option value="Medium" selected>Medium</option>
+                            </select>
+                            <input type="text" name="location" placeholder="Specific Location/Address (e.g., 123 Main St)" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            <textarea name="description" placeholder="Detailed Description of the incident..." rows="3" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 dark:bg-slate-700 dark:text-white" required></textarea>
+                            
+                            <div class="p-3 bg-gray-100 dark:bg-slate-700/50 rounded-xl text-sm text-slate-600 dark:text-gray-400">
+                                Photo/Video Upload (Simulated Placeholder)
+                            </div>
+                            ${Button("Submit Report", COLORS.alert, "alert-triangle", "handleIncidentSubmit(event)", "w-full", "submit")}
+                        </form>
+                    `)}
+                </div>
+            `;
+        }
+
+        function renderCitizenReliefRequestPage() {
+            const resourceOptions = state.resources.map(r => `<option value="${r.type}">${r.type}</option>`).join('');
+            
+            return `
+                <div class="p-4 sm:p-6 lg:p-8 max-w-lg mx-auto">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white mb-6">Request Emergency Relief</h1>
+                    ${Card("Request Form", `
+                        <form id="relief-request-form" class="space-y-4">
+                            <select name="resourceType" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required>
+                                <option value="">Select Resource Needed</option>
+                                ${resourceOptions}
+                            </select>
+                            <input type="number" name="quantity" placeholder="Quantity Needed" min="1" value="1" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            <select name="urgency" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white">
+                                <option value="Urgent">Urgent (Immediate Danger)</option>
+                                <option value="High">High (Next 24 Hours)</option>
+                                <option value="Medium" selected>Medium (General Need)</option>
+                            </select>
+                            <input type="text" name="location" placeholder="Current Location/Delivery Address" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            ${Button("Submit Relief Request", COLORS.primary, "truck", "handleReliefRequestSubmit(event)", "w-full", "submit")}
+                        </form>
+                    `)}
+                </div>
+            `;
+        }
+
+        // --- Event Listener Handlers (Need to be defined in global scope) ---
+
+        function handleSettingsSubmit(event) {
+            event.preventDefault();
+            const form = event.target;
+            const newSettings = {
+                incidentThreshold: parseInt(form.incidentThreshold.value),
+                notificationEmailDomain: form.notificationEmailDomain.value,
+                defaultVolunteerAssignment: form.defaultVolunteerAssignment.value,
+                mapDefaultZoom: state.systemSettings.mapDefaultZoom, // Keep map zoom constant in mock
+            };
+            updateSystemSettings(newSettings);
+            navigateTo('dashboard');
+        }
+
+        function handleIncidentSubmit(event) {
+            event.preventDefault();
+            const form = event.target;
+            const newIncident = {
+                type: form.type.value,
+                severity: form.severity.value,
+                description: form.description.value,
+                location: form.location.value
+            };
+            // Mock API call
+            const incident = {
+                ...newIncident,
+                id: generateId('I'),
+                status: 'New',
+                reporterId: 'C101', 
+                timestamp: Date.now(),
+            };
+            setState({ incidents: [incident, ...state.incidents], currentPage: 'dashboard' });
+            console.log(`Incident Reported: ${incident.type} at ${incident.location}`);
+        }
+
+        function handleReliefRequestSubmit(event) {
+            event.preventDefault();
+            const form = event.target;
+            const newRequest = {
+                resourceType: form.resourceType.value,
+                quantity: parseInt(form.quantity.value),
+                urgency: form.urgency.value,
+                location: form.location.value
+            };
+            // Mock API call
+            const request = {
+                ...newRequest,
+                id: generateId('Q'),
+                status: 'New',
+                assignedTo: null, 
+                reporterId: 'C101', 
+            };
+            setState({ requests: [...state.requests, request], currentPage: 'dashboard' });
+            console.log(`Relief Request Submitted: ${request.resourceType} x ${request.quantity}`);
+        }
+
+        // --- Modal & Form Handlers (for Resource and User Management) ---
+
+        function showModal(title, content) {
+            const modalHtml = `
+                <div id="active-modal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm transition-opacity duration-300">
+                    <div class="w-full max-w-md">
+                        ${Card(title, `
+                            <div class="flex justify-end -mt-10 mb-4">
+                                ${IconButton('x', 'closeModal()', 'text-slate-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700')}
+                            </div>
+                            ${content}
+                        `)}
+                    </div>
+                </div>
+            `;
+            document.getElementById('modals-root').innerHTML = modalHtml;
+        }
+
+        function closeModal() {
+            document.getElementById('modals-root').innerHTML = '';
+            // Ensure app re-renders to reflect potential data changes if modal submission happened
+            renderApp(); 
+        }
+
+        function showAddResourceModal() {
+            const content = `
+                <form id="add-resource-form" onsubmit="handleModalFormSubmit(event, 'addResource')">
+                    <div class="space-y-4">
+                        <input type="text" name="type" placeholder="Resource Name (e.g., Blankets)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        <input type="number" name="available" min="0" placeholder="Initial Available Stock" value="0" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        <input type="text" name="unit" placeholder="Unit (e.g., units, liters)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        <input type="text" name="location" placeholder="Storage Location (e.g., Depot C)" value="Warehouse A" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        ${Button("Create Resource Type", COLORS.primary, "package", "", "w-full", "submit")}
+                    </div>
+                </form>
+            `;
+            showModal("Add New Resource Type", content);
+        }
+        
+        function showUpdateStockModal(resourceId) {
+            const resource = state.resources.find(r => r.id === resourceId);
+            const content = `
+                <form id="update-stock-form" onsubmit="handleModalFormSubmit(event, 'updateStock', '${resourceId}')">
+                    <div class="space-y-4">
+                        <div class="flex space-x-4 mb-4">
+                            <label class="flex items-center space-x-2">
+                                <input type="radio" name="stockType" value="increase" checked />
+                                <span>Increase Stock</span>
+                            </label>
+                            <label class="flex items-center space-x-2">
+                                <input type="radio" name="stockType" value="decrease" />
+                                <span>Decrease Stock</span>
+                            </label>
+                        </div>
+                        <input type="number" name="change" min="1" placeholder="Quantity to change" value="0" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        <p class="text-sm text-slate-500 dark:text-slate-400">Current Available: <strong>${resource.available} ${resource.unit}</strong></p>
+                        ${Button("Apply Stock Change", COLORS.primary, "package", "", "w-full", "submit")}
+                    </div>
+                </form>
+            `;
+            showModal(`Update Stock: ${resource.type}`, content);
+        }
+
+        function showAddUserModal() {
+            const content = `
+                <form id="add-user-form" onsubmit="handleModalFormSubmit(event, 'addUser')">
+                    <div class="space-y-4">
+                        <input type="text" name="name" placeholder="User Full Name" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        <input type="email" name="email" placeholder="User Email (Google OAuth)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        <select name="role" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white">
+                            <option value="${ROLES.VOLUNTEER}">Volunteer</option>
+                            <option value="${ROLES.ADMIN}">Administrator</option>
+                        </select>
+                        <p class="text-xs text-slate-500 dark:text-slate-400">Note: Citizen accounts are created via the public signup portal.</p>
+                        ${Button("Create User & Send Invitation", COLORS.primary, "users", "", "w-full", "submit")}
+                    </div>
+                </form>
+            `;
+            showModal("Add New System User", content);
+        }
+        
+        function handleModalFormSubmit(event, actionType, relatedId = null) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = {};
+
+            // Extract form data
+            Array.from(form.elements).forEach(element => {
+                if (element.name) {
+                    formData[element.name] = element.value;
+                }
+            });
+
+            if (actionType === 'addResource') {
+                addResource(formData);
+            } else if (actionType === 'updateStock' && relatedId) {
+                const change = parseInt(formData.change);
+                const isDecrease = formData.stockType === 'decrease';
+                const changeAmount = isDecrease ? -Math.abs(change) : Math.abs(change);
+                updateResourceStock(relatedId, changeAmount);
+            } else if (actionType === 'addUser') {
+                addUser(formData);
+            } else if (actionType === 'assignVolunteer' && relatedId) {
+                 assignVolunteer(relatedId, formData.volunteerId);
+            }
+            
+            closeModal();
+            // Re-render the whole app to show updates
+            renderApp();
+        }
+
+
+        // --- Main Render Loop ---
+
+        function renderApp() {
+            const appRoot = document.getElementById('app-root');
+
+            if (!state.role) {
+                appRoot.innerHTML = `
+                    <div class="flex flex-col items-center justify-center min-h-screen w-full p-4">
+                        ${renderLoginScreen()}
+                    </div>
+                `;
+            } else {
+                appRoot.innerHTML = renderSidebar() + renderMainContent();
+            }
+
+            // Important: Re-initialize Lucide icons after DOM update
+            lucide.createIcons();
+            
+            // Re-attach specific event listeners after re-render (since inline handlers are limited)
+            if (document.getElementById('citizen-login-form')) {
+                document.getElementById('citizen-login-form').onsubmit = handleCitizenLogin;
+            }
+            if (document.getElementById('incident-report-form')) {
+                document.getElementById('incident-report-form').onsubmit = handleIncidentSubmit;
+            }
+            if (document.getElementById('relief-request-form')) {
+                document.getElementById('relief-request-form').onsubmit = handleReliefRequestSubmit;
+            }
+            if (document.getElementById('settings-form')) {
+                document.getElementById('settings-form').onsubmit = handleSettingsSubmit;
+            }
+        }
+
+        // Initial setup on window load
+        window.onload = () => {
+            // APPLY INITIAL MODE based on state.isDarkMode
+            if (state.isDarkMode) {
+                document.documentElement.classList.add('dark');
+                document.documentElement.classList.remove('light');
+            } else {
+                document.documentElement.classList.remove('dark');
+                document.documentElement.classList.add('light');
+            }
+            
+            // Start the application rendering
+            renderApp(); 
+            
+            // Attach resize listener for sidebar
+            window.addEventListener('resize', () => {
+                if (window.innerWidth <= 768 && state.isSidebarOpen) {
+                    setState({ isSidebarOpen: false });
+                } else if (window.innerWidth > 768 && !state.isSidebarOpen) {
+                    setState({ isSidebarOpen: true });
+                }
+            });
+        };
+    </script>
+</body>
+</html>
