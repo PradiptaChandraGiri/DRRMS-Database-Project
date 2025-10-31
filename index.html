@@ -64,6 +64,54 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        /* --- FALLBACK STYLING (To prevent unstyled flicker/failure) --- */
+        /* Targets the main content area/login card if Tailwind fails */
+        .dark .bg-gray-50 { background-color: #111827 !important; color: #f9fafb !important; }
+        .dark .text-slate-900 { color: #f9fafb !important; }
+        .bg-gray-50 { background-color: #f9fafb !important; }
+
+        /* Fallback for Card/Login container */
+        #app-root > div:nth-child(2) > div {
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            background-color: white;
+            max-width: 512px;
+            margin: auto;
+        }
+        .dark #app-root > div:nth-child(2) > div {
+            background-color: #1f2937 !important;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+            border: 1px solid #374151;
+        }
+        /* Fallback for buttons */
+        button {
+            padding: 8px 16px;
+            border-radius: 8px;
+            color: white !important;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: background-color 0.15s ease;
+        }
+        .bg-red-600 { background-color: #dc2626 !important; }
+        .bg-sky-600 { background-color: #0284c7 !important; }
+        .bg-blue-600 { background-color: #2563eb !important; }
+        
+        /* Fallback for inputs */
+        input[type="email"], input[type="password"], form select {
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            width: 100%;
+        }
+        .dark input, .dark form select {
+            background-color: #374151 !important;
+            border-color: #4b5563 !important;
+            color: #f3f4f6 !important;
+        }
+        
     </style>
 </head>
 <body class="bg-gray-50 dark:bg-slate-900 text-slate-900 dark:text-gray-100 transition-colors duration-500 min-h-screen">
@@ -822,8 +870,8 @@
                         ${Card("Average Resolution Time (Simulated)", `
                             <div class="flex flex-col items-center justify-center h-48">
                                 <span class="text-6xl font-extrabold text-green-500">4.2</span>
-                                <span class="text-lg dark:text-gray-300 mt-2">Hours</span>
-                            </div>
+                            <span class="text-lg dark:text-gray-300 mt-2">Hours</span>
+                        </div>
                         `, "lg:col-span-1")}
                         
                         ${Card("Report Generation & Export", `
@@ -1224,12 +1272,22 @@
         function handleIncidentSubmit(event) {
             event.preventDefault();
             const form = event.target;
+            
+            // FIX: Correctly extract form data using element names
             const newIncident = {
                 type: form.type.value,
                 severity: form.severity.value,
                 description: form.description.value,
                 location: form.location.value
             };
+
+            // Basic validation to ensure required fields are present
+            if (!newIncident.type || !newIncident.location || !newIncident.description) {
+                console.error("Incident submission failed: Required fields are missing.");
+                // In a real app, show a modal/error message here
+                return;
+            }
+
             // Mock API call
             const incident = {
                 ...newIncident,
@@ -1238,6 +1296,8 @@
                 reporterId: 'C101', 
                 timestamp: Date.now(),
             };
+            
+            // Update state and navigate
             setState({ incidents: [incident, ...state.incidents], currentPage: 'dashboard' });
             console.log(`Incident Reported: ${incident.type} at ${incident.location}`);
         }
