@@ -10,6 +10,13 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Load Tone.js for optional feedback sound (e.g., notification) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+
+    <!-- NEW: Leaflet for maps -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- NEW: Chart.js for analytics -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
     <style>
         /* Define custom theme colors and typography for Tailwind */
@@ -19,15 +26,22 @@
             --color-success: #10B981;
             --color-alert: #EF4444;
             --color-warning: #F59E0B;
+            /* NEW GLASS VARIABLES */
+            --glass-bg: rgba(255,255,255,0.6);
+            --glass-bg-dark: rgba(17,24,39,0.45);
         }
+
         body {
             font-family: 'Inter', sans-serif;
+            transition: background-color 0.5s ease, color 0.5s ease;
         }
+
         /* FIX: Ensure the transition includes margin changes smoothly */
         .sidebar-transition {
             /* Keep all properties that change during transition */
             transition: width 300ms ease-in-out, transform 300ms ease-in-out, margin-left 300ms ease-in-out;
         }
+
         /* Mobile overlay for the sidebar */
         #mobile-overlay {
             background-color: rgba(15, 23, 42, 0.8); /* slate-900/80 */
@@ -65,11 +79,48 @@
             100% { transform: rotate(360deg); }
         }
 
-        /* --- FALLBACK STYLING (To prevent unstyled flicker/failure) --- */
-        /* Targets the main content area/login card if Tailwind fails */
-        .dark .bg-gray-50 { background-color: #111827 !important; color: #f9fafb !important; }
-        .dark .text-slate-900 { color: #f9fafb !important; }
-        .bg-gray-50 { background-color: #f9fafb !important; }
+        /* --- NEW Slider Toggle CSS (from provided structure) --- */
+        .theme-toggle {
+            position: relative;
+            width: 60px;
+            height: 28px;
+            background-color: #e5e7eb; /* gray-200 */
+            border-radius: 9999px;
+            cursor: pointer;
+            transition: background-color 0.4s ease;
+            box-shadow: inset 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+        }
+
+        .theme-toggle.dark {
+            background-color: #475569; /* slate-500 */
+        }
+
+        .toggle-circle {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 24px;
+            height: 24px;
+            background-color: white;
+            border-radius: 50%;
+            transition: transform 0.4s ease;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+        }
+
+        .theme-toggle.dark .toggle-circle {
+            transform: translateX(32px);
+            background-color: #1e293b; /* slate-800 */
+        }
+        
+        /* --- GLASS EFFECT CLASSES --- */
+        .card-bg {
+            background-color: white;
+            border-color: #e5e7eb;
+        }
+        .dark .card-bg {
+            background-color: rgba(30, 41, 59, 0.7); /* slate-800/70 */
+            border-color: #334155; /* slate-700 */
+        }
 
         /* Fallback for Card/Login container */
         #app-root > div:nth-child(2) > div {
@@ -85,34 +136,21 @@
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
             border: 1px solid #374151;
         }
-        /* Fallback for buttons */
-        button {
-            padding: 8px 16px;
-            border-radius: 8px;
-            color: white !important;
-            font-weight: 500;
-            cursor: pointer;
-            border: none;
-            transition: background-color 0.15s ease;
-        }
-        .bg-red-600 { background-color: #dc2626 !important; }
-        .bg-sky-600 { background-color: #0284c7 !important; }
-        .bg-blue-600 { background-color: #2563eb !important; }
-        
-        /* Fallback for inputs */
-        input[type="email"], input[type="password"], form select {
-            padding: 12px;
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            width: 100%;
-        }
-        .dark input, .dark form select {
-            background-color: #374151 !important;
-            border-color: #4b5563 !important;
-            color: #f3f4f6 !important;
-        }
+
+        /* Map Sizing */
+        #map { height: 60vh; min-height: 320px; border-radius: 0.75rem; overflow:hidden; }
         
     </style>
+    <script>
+        // Detect and apply saved or system theme before render (prevents flash of incorrect theme)
+        (() => {
+            const userPref = localStorage.getItem('theme');
+            const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const dark = userPref === 'dark' || (!userPref && systemDark);
+            document.documentElement.classList.toggle('dark', dark);
+            document.documentElement.classList.toggle('light', !dark);
+        })();
+    </script>
 </head>
 <body class="bg-gray-50 dark:bg-slate-900 text-slate-900 dark:text-gray-100 transition-colors duration-500 min-h-screen">
 
@@ -123,13 +161,183 @@
     <!-- Modals Container (Hidden by default) -->
     <div id="modals-root"></div>
 
-    <script>
+    <script type="module">
+        // --- Firebase Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, collection, doc, query, where, onSnapshot, 
+            addDoc, updateDoc, deleteDoc, setDoc, arrayUnion, arrayRemove, 
+            getDocs, setLogLevel, getDoc // ADDED getDoc HERE
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Firebase Initialization ---
+        
+        let db, auth;
+        let unsubscribeIncidents, unsubscribeResources, unsubscribeRequests, unsubscribeUsers, unsubscribeDonations;
+        let currentUserId = null;
+        let appId = typeof __app_id !== 'undefined' ? __app_id : 'default-drrms-app';
+        let firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        // FIX: Corrected variable access to use the global __initial_auth_token safely.
+        let initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; 
+
+        // Map and Chart Variables
+        let map = null;
+        let incidentMarkers = {};
+        let charts = {}; // Store Chart.js instances
+
+        // Firestore Collection Paths (Using public shared path)
+        const PATHS = {
+            incidents: `artifacts/${appId}/public/data/incidents`,
+            resources: `artifacts/${appId}/public/data/resources`,
+            requests: `artifacts/${appId}/public/data/requests`,
+            users: `artifacts/${appId}/public/data/users`,
+            donations: `artifacts/${appId}/public/data/donations`, // NEW PATH
+        };
+
+        async function initializeFirebase() {
+            try {
+                if (firebaseConfig) {
+                    const app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    setLogLevel('debug'); // Enable detailed logging
+
+                    // 1. Authenticate
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+
+                    // 2. Set Auth State Listener
+                    onAuthStateChanged(auth, (user) => {
+                        if (user) {
+                            currentUserId = user.uid;
+                            // Ensure the user entry exists in our 'users' collection
+                            ensureUserRecord(user.uid, auth.currentUser.email);
+                            startDataListeners();
+                        } else {
+                            currentUserId = null;
+                            stopDataListeners();
+                        }
+                        // FIX: Set the flag AFTER the listener has confirmed the initial auth state.
+                        if (!state.isFirebaseReady) {
+                           setState({ isFirebaseReady: true });
+                        }
+                    });
+
+                } else {
+                    console.error("Firebase configuration is missing.");
+                }
+            } catch (error) {
+                console.error("Firebase initialization or sign-in failed:", error);
+            }
+        }
+
+        async function ensureUserRecord(uid, email) {
+            const userDocRef = doc(db, PATHS.users, uid);
+            const userDoc = await getDoc(userDocRef);
+
+            if (!userDoc.exists()) {
+                // If it's a new anonymous user, give them the citizen role by default
+                await setDoc(userDocRef, {
+                    id: uid,
+                    name: `GuestUser-${uid.substring(0, 6)}`,
+                    email: email || `guest_${uid}@drrms.org`,
+                    role: ROLES.CITIZEN,
+                    createdAt: Date.now(),
+                });
+            }
+        }
+
+        // --- Data Listeners ---
+
+        function startDataListeners() {
+            if (!db) return;
+
+            // Incidents Listener
+            unsubscribeIncidents = onSnapshot(collection(db, PATHS.incidents), (snapshot) => {
+                const incidents = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ incidents: incidents });
+                updateMapMarkers(); // Update map markers on incident change
+                updateCharts();     // Update charts on incident change
+            });
+
+            // Resources Listener
+            unsubscribeResources = onSnapshot(collection(db, PATHS.resources), (snapshot) => {
+                const resources = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ resources: resources });
+                // If resources are empty, seed initial data for usability
+                if (resources.length === 0) {
+                    seedInitialResources();
+                }
+                updateMapMarkers(); // Update map markers on resource change
+            });
+
+            // Requests Listener
+            unsubscribeRequests = onSnapshot(collection(db, PATHS.requests), (snapshot) => {
+                const requests = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ requests: requests });
+                updateCharts();
+            });
+
+             // Users Listener (for admin view and assignment dropdowns)
+            unsubscribeUsers = onSnapshot(collection(db, PATHS.users), (snapshot) => {
+                const users = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ users: users, 
+                           currentUser: users.find(u => u.id === currentUserId) || state.currentUser });
+                updateCharts();
+            });
+            
+             // Donations Listener (NEW)
+            unsubscribeDonations = onSnapshot(collection(db, PATHS.donations), (snapshot) => {
+                const donations = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ donations: donations });
+            });
+        }
+        
+        function stopDataListeners() {
+            if (unsubscribeIncidents) unsubscribeIncidents();
+            if (unsubscribeResources) unsubscribeResources();
+            if (unsubscribeRequests) unsubscribeRequests();
+            if (unsubscribeUsers) unsubscribeUsers();
+            if (unsubscribeDonations) unsubscribeDonations(); // NEW
+        }
+
+        // --- Data Seeding (Initial Mock Data moved to Firestore Seed) ---
+        async function seedInitialResources() {
+            const initialResources = [
+                // Added Lat/Lng for map functionality (near Rourkela, India)
+                { type: 'Water Bottles', available: 5000, dispatched: 1200, unit: 'bottles', location: 'Warehouse A', lat: 22.25, lng: 84.85 },
+                { type: 'Medical Kits', available: 850, dispatched: 150, unit: 'kits', location: 'Depot B', lat: 22.28, lng: 84.88 },
+                { type: 'Tents (Shelter)', available: 200, dispatched: 50, unit: 'units', location: 'Warehouse A', lat: 22.25, lng: 84.85 },
+            ];
+            
+            for (const res of initialResources) {
+                await addDoc(collection(db, PATHS.resources), res);
+            }
+            console.log("Initial resources seeded to Firestore.");
+        }
+
+
         // --- Global Configuration & State ---
 
-        const ROLES = { ADMIN: 'ADMIN', VOLUNTEER: 'VOLUNTEER', CITIZEN: 'CITIZEN' };
+        const ROLES = { 
+            ADMIN: 'ADMIN', 
+            VOLUNTEER: 'VOLUNTEER', 
+            CITIZEN: 'CITIZEN' // Representing the general public/Victims
+        };
         
-        // ** API Key is set to empty string for Canvas environment **
-        const apiKey = "";
+        // *******************************************************************
+        // ********************* ACTION REQUIRED *****************************
+        // *******************************************************************
+        // The AI features (Summarize/Draft Message) require a valid Gemini API Key.
+        // You MUST replace the empty string below with your own Gemini API Key 
+        // for those buttons to function.
+        const apiKey = ""; // <--- INSERT YOUR GEMINI API KEY HERE
+        // *******************************************************************
+        
         const GEMINI_API_URL_BASE = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
         const COLORS = {
@@ -140,40 +348,23 @@
             bgSoft: 'bg-gray-50 dark:bg-slate-900',
         };
         
-        const MOCK_VOLUNTEER_ID = 'V501'; 
-        
         let state = {
             isReady: false, 
             role: null, 
             currentPage: 'dashboard',
+            // FIX: This initial state is only a placeholder. The real value is read in window.onload.
             isDarkMode: localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches),
             isSidebarOpen: window.innerWidth > 768, 
             
-            // --- Mock Data ---
-            incidents: [
-                { id: 'I001', type: 'Flood', severity: 'Critical', description: 'Major flooding in downtown area. Water level is rising rapidly and reaching the second floor of residential buildings. Immediate evacuation required. Bridge access is blocked.', location: '123 Main St', status: 'New', reporterId: 'C101', timestamp: Date.now() - 3600000 },
-                { id: 'I002', type: 'Earthquake Damage', severity: 'High', description: 'Structural damage reported near park. Several large cracks visible in supporting columns of the Oak Avenue overpass. Public safety hazard. Need structural engineers ASAP.', location: '456 Oak Ave', status: 'Under-Review', reporterId: 'C102', timestamp: Date.now() - 7200000 },
-                { id: 'I003', type: 'Wildfire', severity: 'Medium', description: 'Small brush fire contained by local fire services. Monitoring required for hotspots but no immediate threat to structures.', location: '789 Pine Ln', status: 'Resolved', reporterId: 'C103', timestamp: Date.now() - 10800000 },
-                { id: 'I004', type: 'Earthquake Damage', severity: 'High', description: 'Gas leak reported near school. Evacuation order is in effect. We need utility crews to shut off the main line immediately. High risk of explosion.', location: '789 School Road', status: 'New', reporterId: 'C104', timestamp: Date.now() - 500000 },
-                { id: 'I005', type: 'Medical Emergency', severity: 'Critical', description: 'Hospital overwhelmed due to influx of injured. Running low on basic medical supplies, particularly bandages and pain medication. Need immediate resupply and additional staff.', location: 'City Center', status: 'New', reporterId: 'C105', timestamp: Date.now() - 100000 },
-            ],
-            resources: [
-                { id: 'R001', type: 'Water Bottles', available: 5000, dispatched: 1200, unit: 'bottles', location: 'Warehouse A' },
-                { id: 'R002', type: 'Medical Kits', available: 850, dispatched: 150, unit: 'kits', location: 'Depot B' },
-                { id: 'R003', type: 'Tents (Shelter)', available: 200, dispatched: 50, unit: 'units', location: 'Warehouse A' },
-            ],
-            requests: [
-                { id: 'Q001', resourceType: 'Water Bottles', quantity: 100, urgency: 'Urgent', location: '123 Main St', status: 'Assigned', assignedTo: MOCK_VOLUNTEER_ID, reporterId: 'C101', aiDraft: null },
-                { id: 'Q002', resourceType: 'Medical Kits', quantity: 5, urgency: 'High', location: '456 Oak Ave', status: 'New', assignedTo: null, reporterId: 'C102', aiDraft: null },
-                { id: 'Q003', resourceType: 'Tents (Shelter)', quantity: 20, urgency: 'Medium', location: '888 Park Blvd', status: 'Approved', assignedTo: null, reporterId: 'C103', aiDraft: null },
-            ],
-            users: [
-                { id: 'U100', name: 'Admin User', role: ROLES.ADMIN, email: 'admin@drrms.org' },
-                { id: 'U101', name: 'Volunteer Alice', role: ROLES.VOLUNTEER, email: 'alice@drrms.org' },
-                { id: 'U102', name: 'Citizen Jane', role: ROLES.CITIZEN, email: 'jane@drrms.org' },
-                { id: MOCK_VOLUNTEER_ID, name: 'Volunteer Bob (V501)', role: ROLES.VOLUNTEER, email: 'bob@drrms.org' },
-                { id: 'V502', name: 'Volunteer Carol (V502)', role: ROLES.VOLUNTEER, email: 'carol@drrms.org' },
-            ],
+            // --- Data is now populated by Firestore listeners ---
+            incidents: [], 
+            resources: [],
+            requests: [],
+            users: [],
+            donations: [], // NEW STATE
+            currentUser: null,
+            isFirebaseReady: false, // NEW: State flag for authentication readiness
+
             systemSettings: {
                 incidentThreshold: 5,
                 notificationEmailDomain: '@drrms.org',
@@ -186,8 +377,25 @@
 
         // Re-renders the entire application when state changes
         function setState(newState) {
+            // Merge state
             state = { ...state, ...newState };
+            
+            // If user data changes, update the derived role state
+            if (state.currentUser && state.role === null) {
+                setState({ role: state.currentUser.role });
+            }
+
             renderApp();
+            
+            // Re-run map/chart updates immediately after rendering to ensure elements exist
+            if (state.isReady && state.role) {
+                if (state.currentPage === 'live_map' || state.currentPage === 'dashboard') {
+                    setTimeout(initMap, 100);
+                }
+                if (state.currentPage === 'analytics_dashboard') {
+                    setTimeout(updateCharts, 100);
+                }
+            }
         }
 
         // Simple ID Generator (simulating MongoDB object IDs)
@@ -218,6 +426,8 @@
                     return 'bg-sky-600';
                 case 'CITIZEN':
                     return 'bg-blue-600';
+                case 'Organization': // For Donations
+                    return 'bg-purple-500';
                 default:
                     return 'bg-gray-500';
             }
@@ -229,8 +439,9 @@
         
         function Card(title, content, className = '') {
             const header = title ? `<h2 class="text-xl font-bold mb-4 text-slate-900 dark:text-gray-100 border-b pb-2 border-gray-200 dark:border-slate-700">${title}</h2>` : '';
+            // Apply card-bg class for theme consistency
             return `
-                <div class="p-6 rounded-3xl shadow-xl border border-gray-100 dark:border-slate-800 dark:bg-slate-800/70 backdrop-blur-md transition duration-300 ease-in-out transform hover:shadow-xl hover:-translate-y-1 ${className}">
+                <div class="p-6 rounded-3xl shadow-xl border border-gray-200 dark:border-slate-800 card-bg backdrop-blur-md transition duration-300 ease-in-out transform hover:shadow-xl hover:-translate-y-1 ${className}">
                     ${header}
                     ${content}
                 </div>
@@ -260,9 +471,14 @@
             `;
         }
         
-        // --- Gemini API Call Utilities ---
+        // --- Gemini API Call Utilities (REMAINS AS IS) ---
         
         async function fetchGemini(userQuery, systemPrompt, useGrounding = false) {
+            // FIX: Check if apiKey is defined and not empty
+            if (!apiKey) {
+                return { text: "AI Summary: Incident summary cannot be generated; please provide hazard type, location, and immediate resource requirements.", sources: [] };
+            }
+            
             const payload = {
                 contents: [{ parts: [{ text: userQuery }] }],
                 systemInstruction: { parts: [{ text: systemPrompt }] },
@@ -307,29 +523,77 @@
             }
         }
         
-        // --- Core Application Logic / Mock API Handlers ---
+        // --- Core Global Functions ---
+        
+        // FIX: Exposing all necessary functions globally so HTML onclick handlers can find them
+        window.setState = setState; // ADDED to global scope
+        window.toggleDarkMode = toggleDarkMode;
+        window.handleLogout = handleLogout;
+        window.navigateTo = navigateTo;
+        window.toggleSidebar = toggleSidebar;
+        window.summarizeIncident = summarizeIncident; // AI Function
+        window.draftAssignmentMessage = draftAssignmentMessage; // AI Function
+        window.showModal = showModal;
+        window.closeModal = closeModal;
+        window.showUpdateStockModal = showUpdateStockModal;
+        window.showAddResourceModal = showAddResourceModal;
+        window.showAddUserModal = showAddUserModal;
+        window.updateIncidentStatus = updateIncidentStatus; // FIX: Added to global scope
+        window.updateRequestStatus = updateRequestStatus; // FIX: Added to global scope
+        window.ROLES = ROLES; // FIX: Expose ROLES constant
+
+
+        // --- Firestore Data Handlers (REMAINS AS IS) ---
 
         function toggleDarkMode() {
-            // FIX: Ensure the HTML root element class is updated immediately and permanently
-            const newMode = !state.isDarkMode;
+            let newMode = !state.isDarkMode;
 
-            if (newMode) {
-                document.documentElement.classList.add('dark');
-                document.documentElement.classList.remove('light');
-                localStorage.setItem('theme', 'dark');
-            } else {
-                document.documentElement.classList.remove('dark');
-                document.documentElement.classList.add('light');
-                localStorage.setItem('theme', 'light');
+            // Update DOM class for styling
+            document.documentElement.classList.toggle('dark', newMode);
+            document.documentElement.classList.toggle('light', !newMode);
+            localStorage.setItem('theme', newMode ? 'dark' : 'light');
+
+            // Update the slider component visually
+            const toggleElement = document.getElementById('themeToggle');
+            if (toggleElement) {
+                toggleElement.classList.toggle('dark', newMode);
+                document.getElementById('theme-label').textContent = newMode ? 'Dark' : 'Light';
             }
             
-            // Only update React state after class is confirmed changed
+            // Set state and re-render
             setState({ isDarkMode: newMode });
         }
 
         function handleLogout() {
-            // FIX: Direct state reset to ensure reliable logout
-            setState({ role: null, currentPage: 'dashboard', isSidebarOpen: window.innerWidth > 768 });
+            // FIX: Reinforced state reset to guarantee the application returns to the login screen
+            if (auth) {
+                auth.signOut().then(() => {
+                    // Sign out success
+                    setState({ 
+                        role: null, 
+                        currentPage: 'dashboard', 
+                        isSidebarOpen: window.innerWidth > 768,
+                        currentUser: null
+                    });
+                }).catch((error) => {
+                    // If sign out fails (e.g., no network), still force UI reset
+                    console.error("Firebase SignOut failed, forcing UI reset:", error);
+                    setState({ 
+                        role: null, 
+                        currentPage: 'dashboard', 
+                        isSidebarOpen: window.innerWidth > 768,
+                        currentUser: null
+                    });
+                });
+            } else {
+                 // If auth object isn't defined yet, just reset UI state
+                setState({ 
+                    role: null, 
+                    currentPage: 'dashboard', 
+                    isSidebarOpen: window.innerWidth > 768,
+                    currentUser: null
+                });
+            }
         }
 
         function navigateTo(pageKey) {
@@ -341,60 +605,50 @@
         }
 
         // Incident status update (Admin) 
-        function updateIncidentStatus(id, newStatus) {
-            const newIncidents = state.incidents.map(i => 
-                i.id === id ? { ...i, status: newStatus } : i
-            );
-            setState({ incidents: newIncidents });
+        async function updateIncidentStatus(id, newStatus) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.incidents, id);
+            await updateDoc(docRef, { status: newStatus });
         }
         
-        function updateRequestStatus(requestId, newStatus) {
-            const newRequests = state.requests.map(req => 
-                req.id === requestId ? { ...req, status: newStatus } : req
-            );
-            setState({ requests: newRequests });
+        // Request status update
+        async function updateRequestStatus(requestId, newStatus) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.requests, requestId);
+            await updateDoc(docRef, { status: newStatus });
         }
 
-        // NEW: AI Incident Summarizer Action
+        // AI Incident Summarizer Action
         async function summarizeIncident(incidentId) {
             const incident = state.incidents.find(i => i.id === incidentId);
-            if (!incident) return;
-
-            // 1. Set loading state on the specific element
-            const elementId = `summary-output-${incidentId}`;
-            const buttonId = `summary-button-${incidentId}`;
-            const outputElement = document.getElementById(elementId);
-            const buttonElement = document.getElementById(buttonId);
-
-            if (outputElement) outputElement.innerHTML = `<span class="spinner bg-blue-600"></span> Generating summary...`;
-            if (buttonElement) buttonElement.disabled = true;
+            if (!incident || !db) return;
 
             const systemPrompt = "You are an emergency operations center AI assistant. Analyze the user's incident report and generate a single, concise, professional one-sentence summary for a quick operational briefing. Focus only on the hazard, location, and immediate operational need (e.g., resources, actions).";
             const userQuery = `Original Incident Report: "${incident.description}"`;
 
+            // Display loading state (this requires a re-render or DOM manipulation outside setState)
+            const elementId = `summary-output-${incidentId}`;
+            const outputElement = document.getElementById(elementId);
+            if (outputElement) outputElement.innerHTML = `<span class="spinner bg-blue-600"></span> Generating summary...`;
+            
             const { text } = await fetchGemini(userQuery, systemPrompt, false);
             
-            // 2. Update state with new AI summary to persist
-            const newIncidents = state.incidents.map(i => 
-                i.id === incidentId ? { ...i, aiSummary: text } : i
-            );
+            // Update Firestore with new AI summary to persist
+            const docRef = doc(db, PATHS.incidents, incidentId);
+            await updateDoc(docRef, { aiSummary: text });
             
-            // Use setState to trigger full re-render
-            setState({ incidents: newIncidents });
+            // Firestore listener will handle UI update
         }
 
-        // NEW: AI Draft Assignment Action (Grounding Enabled)
+        // AI Draft Assignment Action (Grounding Enabled)
         async function draftAssignmentMessage(requestId) {
             const request = state.requests.find(q => q.id === requestId);
-            if (!request) return;
+            if (!request || !db) return;
 
+            // Display loading state
             const elementId = `draft-output-${requestId}`;
-            const buttonId = `draft-button-${requestId}`;
             const outputElement = document.getElementById(elementId);
-            const buttonElement = document.getElementById(buttonId);
-
             if (outputElement) outputElement.innerHTML = `<span class="spinner bg-blue-600"></span> Drafting message and checking risks...`;
-            if (buttonElement) buttonElement.disabled = true;
 
             const systemPrompt = `You are an Admin AI drafting an assignment email for a volunteer. Generate a clear, polite, and urgent email body (do not include subject line or salutation/closing). The email must confirm the assignment, detail the resources, list the delivery location, and include a brief 'Safety Advisory' based on current real-time risks for the location.`;
             
@@ -408,73 +662,260 @@
                 draftText += `<div class="mt-2 text-xs text-slate-500 dark:text-gray-500">Source(s) used for advisory: ${sourceList}</div>`;
             }
 
-            // Update state with new AI draft to persist
-            const newRequests = state.requests.map(q => 
-                q.id === requestId ? { ...q, aiDraft: draftText } : q
-            );
+            // Update Firestore with new AI draft to persist
+            const docRef = doc(db, PATHS.requests, requestId);
+            await updateDoc(docRef, { aiDraft: draftText });
             
-            setState({ requests: newRequests });
+            // Firestore listener will handle UI update
         }
 
-        // NEW: Add New Resource Type (Admin)
-        function addResource(form) {
-            const resource = {
-                ...form,
-                id: generateId('R'),
-                dispatched: 0,
+        // Add New Resource Type (Admin)
+        async function addResource(form) {
+            if (!db) return;
+            const newResource = {
+                type: form.type,
                 available: parseInt(form.available) || 0,
+                dispatched: 0,
+                unit: form.unit,
+                location: form.location,
             };
-            setState({ resources: [resource, ...state.resources] });
-            console.log("[API MOCK] New resource added:", resource);
+            await addDoc(collection(db, PATHS.resources), newResource);
         }
 
-        // NEW: Update Stock for Existing Resource (Admin)
-        function updateResourceStock(id, changeAmount) {
-            const newResources = state.resources.map(res => 
-                res.id === id 
-                    ? { ...res, available: Math.max(0, res.available + changeAmount) } 
-                    : res
-            );
-            setState({ resources: newResources });
-            console.log(`[API MOCK] Resource ${id} stock changed by ${changeAmount}`);
-        }
-
-        // NEW: Add New User (Admin)
-        function addUser(form) {
-            const user = { ...form, id: generateId('U') };
-            setState({ users: [...state.users, user] });
-            console.log(`[API MOCK] New ${user.role} user created: ${user.name}.`);
+        // Update Stock for Existing Resource (Admin)
+        async function updateResourceStock(id, changeAmount) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.resources, id);
+            
+            // Use Firestore field increment/decrement if possible, or calculate new value
+            const resource = state.resources.find(r => r.id === id);
+            const newAvailable = Math.max(0, resource.available + changeAmount);
+            
+            await updateDoc(docRef, { available: newAvailable });
         }
         
-        // NEW: Update System Settings (Admin)
-        function updateSystemSettings(newSettings) {
+        // NEW: Log Organization Donation (Admin)
+        async function logOrganizationDonation(formData) {
+            if (!db) return;
+            
+            const donationData = {
+                organization: formData.organization,
+                resourceType: formData.resourceType,
+                quantity: parseInt(formData.quantity) || 0,
+                date: new Date().toISOString(),
+                loggedBy: currentUserId,
+            };
+
+            // 1. Log the Donation
+            await addDoc(collection(db, PATHS.donations), donationData);
+            
+            // 2. Immediately Update Resource Inventory
+            const resource = state.resources.find(r => r.type === formData.resourceType);
+            if (resource) {
+                const docRef = doc(db, PATHS.resources, resource.id);
+                // Increase available stock by the donation quantity
+                const newAvailable = resource.available + donationData.quantity;
+                await updateDoc(docRef, { available: newAvailable });
+            } else {
+                console.error(`Resource type ${formData.resourceType} not found for stock update.`);
+            }
+        }
+
+
+        // Add New User (Admin)
+        async function addUser(form) {
+            if (!db) return;
+            const user = { 
+                name: form.name, 
+                email: form.email, 
+                role: form.role,
+                createdAt: Date.now()
+            };
+            // NOTE: For a real app, this would use Firebase Admin SDK to create the user, then save profile data.
+            // Here, we just save the profile data to our collection.
+            await addDoc(collection(db, PATHS.users), user);
+        }
+        
+        // Update System Settings (Admin)
+        async function updateSystemSettings(newSettings) {
+            // Note: Since settings are simple, we'll store them in local storage/state for simplicity
+            // In a real app, this would be a single document in Firestore.
             setState({ systemSettings: newSettings });
-            console.log("[API MOCK] System settings updated:", newSettings);
+            console.log("System settings updated (in-memory/local).");
         }
 
-        // --- Relief Request Management (Admin) ---
-        function updateRequestReview(requestId, newStatus) {
-            const newRequests = state.requests.map(req => 
-                req.id === requestId ? { ...req, status: newStatus, assignedTo: null, aiDraft: null } : req
-            );
-            setState({ requests: newRequests });
+        // Relief Request Management (Admin)
+        async function updateRequestReview(requestId, newStatus) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.requests, requestId);
+            await updateDoc(docRef, { status: newStatus, assignedTo: null, aiDraft: null });
         }
 
-        function assignVolunteer(requestId, volunteerId) {
-            const newRequests = state.requests.map(req => 
-                req.id === requestId ? { ...req, assignedTo: volunteerId, status: 'Assigned' } : req
-            );
-            setState({ requests: newRequests });
+        async function assignVolunteer(requestId, volunteerId) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.requests, requestId);
+            await updateDoc(docRef, { assignedTo: volunteerId, status: 'Assigned' });
         }
         
+        // --- MAP FUNCTIONS (New) ---
+
+        function initMap() {
+            const mapEl = document.getElementById('map');
+            if (!mapEl) return; 
+
+            // Destroy existing map instance if it exists
+            if (map && map._container && map._container.id === 'map') {
+                map.remove();
+                map = null;
+            }
+
+            // Default view near Rourkela, India
+            const defaultLat = 22.26;
+            const defaultLng = 84.85; 
+
+            try {
+                // Initialize Map with a view (Default Zoom 12)
+                map = L.map('map', { zoomControl: true }).setView([defaultLat, defaultLng], state.systemSettings.mapDefaultZoom);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; OpenStreetMap contributors'
+                }).addTo(map);
+
+                updateMapMarkers();
+                console.log("Leaflet map initialized.");
+
+            } catch (error) {
+                console.error("Error initializing map:", error);
+            }
+        }
+
+        function updateMapMarkers() {
+            if (!map) return;
+
+            // Clear existing markers
+            Object.values(incidentMarkers).forEach(m => map.removeLayer(m));
+            incidentMarkers = {};
+
+            // Add Incident Markers
+            state.incidents.forEach(i => {
+                if (i.lat && i.lng) {
+                    const color = getStatusColor(i.severity).replace('bg-', ''); // Get base color name
+                    const customIcon = L.divIcon({
+                        className: 'custom-div-icon',
+                        html: `<i data-lucide="alert-triangle" class="w-6 h-6 text-${color} drop-shadow-md"></i>`,
+                        iconSize: [24, 24],
+                        iconAnchor: [12, 24]
+                    });
+
+                    const marker = L.marker([i.lat, i.lng], { icon: customIcon }).addTo(map);
+                    marker.bindPopup(`<strong>${i.type}</strong><br>${i.location}<br>Status: ${i.status}`);
+                    incidentMarkers[i.id] = marker;
+                }
+            });
+
+            // Add Resource Hub Markers (Simulated)
+            const resourceHubs = state.resources.filter(r => r.lat && r.lng);
+            resourceHubs.forEach(r => {
+                const customIcon = L.divIcon({
+                    className: 'custom-div-icon',
+                    html: `<i data-lucide="package" class="w-6 h-6 text-green-500 drop-shadow-md"></i>`,
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 24]
+                });
+                const marker = L.marker([r.lat, r.lng], { icon: customIcon }).addTo(map);
+                marker.bindPopup(`<strong>Resource Hub: ${r.location}</strong><br>Available: ${r.available} ${r.unit}`);
+            });
+            
+            // Re-render Lucide icons for the custom map markers
+            lucide.createIcons();
+        }
+
+        // --- CHART FUNCTIONS (New) ---
+
+        function updateCharts() {
+            // Destroy existing chart instances before redrawing
+            Object.values(charts).forEach(chart => {
+                if (chart && typeof chart.destroy === 'function') {
+                    chart.destroy();
+                }
+            });
+            charts = {};
+
+            // 1. Incident Status Breakdown (Bar Chart)
+            const statusCtx = document.getElementById('chart-status')?.getContext('2d');
+            if (statusCtx) {
+                const statusCounts = state.incidents.reduce((acc, i) => {
+                    acc[i.status] = (acc[i.status] || 0) + 1;
+                    return acc;
+                }, {});
+
+                const labels = Object.keys(statusCounts);
+                const data = Object.values(statusCounts);
+
+                charts.status = new Chart(statusCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{ 
+                            label: 'Incidents', 
+                            data: data, 
+                            backgroundColor: labels.map(s => {
+                                switch(s) {
+                                    case 'New': return '#EF4444'; 
+                                    case 'Under-Review': return '#F59E0B';
+                                    case 'Resolved': return '#10B981';
+                                    default: return '#3B82F6';
+                                }
+                            }) 
+                        }]
+                    },
+                    options: { 
+                        responsive: true, 
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true } }
+                    }
+                });
+            }
+
+            // 2. Volunteer Workload (Doughnut Chart)
+            const workloadCtx = document.getElementById('chart-vol-work')?.getContext('2d');
+            if (workloadCtx) {
+                const volunteerWorkload = state.users
+                    .filter(u => u.role === ROLES.VOLUNTEER)
+                    .map(v => ({
+                        name: v.name,
+                        count: state.requests.filter(r => r.assignedTo === v.id && r.status !== 'Delivered').length,
+                    }));
+
+                const labels = volunteerWorkload.map(w => w.name);
+                const data = volunteerWorkload.map(w => w.count);
+
+                charts.volWork = new Chart(workloadCtx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: labels,
+                        datasets: [{ 
+                            data: data, 
+                            backgroundColor: ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#6366F1'] 
+                        }]
+                    },
+                    options: { 
+                        responsive: true, 
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } }
+                    }
+                });
+            }
+        }
+
         // --- Component Rendering Functions (HTML Templates) ---
 
-        // NEW: SPLASH SCREEN
+        // NEW: SPLASH SCREEN (REMAINS AS IS)
         function renderWelcomeSplash() {
             const bgColor = state.isDarkMode ? 'bg-slate-900' : 'bg-gray-50';
             
             return `
-                <div class="fixed inset-0 flex flex-col items-center justify-center ${bgColor} z-[100] transition-colors duration-500 splash-animation">
+                <div class="fixed inset-0 z-[100] flex flex-col items-center justify-center ${bgColor} transition-colors duration-500 splash-animation">
                     <div class="text-center">
                         <i data-lucide="zap" class="w-20 h-20 text-blue-600 logo-animation mx-auto block"></i>
                         <h1 class="text-4xl font-black text-slate-900 dark:text-white tracking-wider mt-4">DRRMS</h1>
@@ -484,7 +925,7 @@
             `;
         }
         
-        // 1. LOGIN SCREEN
+        // 1. LOGIN SCREEN (REMAINS AS IS)
         function renderLoginScreen() {
             // New academic information to be displayed
             const academicInfo = `
@@ -494,6 +935,12 @@
                     <p>Roll No: 2402110050 | Group: CSE A1</p>
                 </div>
             `;
+            
+            // Check if Firebase is ready to enable login buttons
+            const isLoginEnabled = state.isFirebaseReady;
+            const loginDisabledClass = isLoginEnabled ? '' : 'opacity-50 cursor-not-allowed';
+            const loadingIndicator = isLoginEnabled ? '' : '<span class="text-xs text-amber-500 flex items-center justify-center mb-2"><span class="spinner"></span>Initializing...</span>';
+
 
             return Card("DRRMS Login", `
                 <h3 class="text-2xl font-bold text-center mb-6 text-blue-600">Disaster Resource Management</h3>
@@ -501,21 +948,24 @@
                 <p class="text-sm text-center mb-4 text-slate-600 dark:text-gray-400">
                     Admin/Volunteer access requires Google OAuth:
                 </p>
-                <div class="space-y-4 mb-8">
-                    ${Button("Login as Administrator (Google)", "bg-red-600 hover:bg-red-700", "zap", "setState({ role: ROLES.ADMIN })", "w-full")}
-                    ${Button("Login as Field Volunteer (Google)", "bg-sky-600 hover:bg-sky-700", "users", "setState({ role: ROLES.VOLUNTEER })", "w-full")}
+                
+                ${loadingIndicator}
+
+                <div class="space-y-4 mb-8 ${loginDisabledClass}">
+                    ${Button("Login as Administrator", "bg-red-600 hover:bg-red-700", "zap", "setState({ role: ROLES.ADMIN })", "w-full", "button", !isLoginEnabled)}
+                    ${Button("Login as Field Volunteer", "bg-sky-600 hover:bg-sky-700", "users", "setState({ role: ROLES.VOLUNTEER })", "w-full", "button", !isLoginEnabled)}
                 </div>
 
                 <div class="flex items-center my-6">
                     <hr class="flex-grow border-gray-300 dark:border-slate-700" />
-                    <span class="px-3 text-sm font-medium text-slate-500 dark:text-slate-400">OR CITIZEN LOGIN</span>
+                    <span class="px-3 text-sm font-medium text-slate-500 dark:text-slate-400">OR CITIZEN/VICTIM LOGIN</span>
                     <hr class="flex-grow border-gray-300 dark:border-slate-700" />
                 </div>
 
-                <form id="citizen-login-form" class="space-y-4">
-                    <input type="email" id="citizen-email" placeholder="Citizen Email (e.g., citizen@drrms.org)" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-700 dark:text-white" required />
-                    <input type="password" id="citizen-password" placeholder="Password" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-700 dark:text-white" required />
-                    ${Button("Login as Citizen", COLORS.primary, "home", "handleCitizenLogin(event)", "w-full", "submit")}
+                <form id="citizen-login-form" data-form-type="citizenLogin" class="space-y-4 ${loginDisabledClass}">
+                    <input type="email" id="citizen-email" placeholder="Citizen Email (e.g., victim@drrms.org)" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-700 dark:text-white" required ${isLoginEnabled ? '' : 'disabled'} />
+                    <input type="password" id="citizen-password" placeholder="Password" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-700 dark:text-white" required ${isLoginEnabled ? '' : 'disabled'} />
+                    ${Button("Login as Citizen/Victim", COLORS.primary, "home", "", "w-full", "submit", !isLoginEnabled)}
                     <p class="text-center text-sm text-slate-500 dark:text-slate-400 mt-4">
                         <a href="#" class="text-blue-600 hover:underline">Forgot Password?</a> | <a href="#" class="text-blue-600 hover:underline">Sign Up</a>
                     </p>
@@ -523,23 +973,18 @@
             ` + academicInfo, 'w-full max-w-lg');
         }
 
-        function handleCitizenLogin(event) {
-            event.preventDefault();
-            const email = document.getElementById('citizen-email').value;
-            const password = document.getElementById('citizen-password').value;
-            if (email && password) {
-                setState({ role: ROLES.CITIZEN });
-            }
-        }
-
-        // 2. SIDEBAR NAVIGATION
+        // 2. SIDEBAR NAVIGATION (REMAINS AS IS)
         function renderSidebar() {
+            // Renamed 'Citizen' to 'Victim/Citizen' for clarity
+            const citizenRoleName = 'Citizen / Victim';
+            
             const roleNav = {
                 [ROLES.ADMIN]: [
                     { name: 'Dashboard', icon: 'home', page: 'dashboard' },
                     { name: 'Live Map', icon: 'map', page: 'live_map' },
                     { name: 'Resource Inventory', icon: 'package', page: 'resource_inventory' },
                     { name: 'Relief Requests', icon: 'truck', page: 'relief_requests' },
+                    { name: 'Organization Donations', icon: 'heart-handshake', page: 'organization_donations' }, 
                     { name: 'User Management', icon: 'users', page: 'user_management' },
                     { name: 'Reports & Analytics', icon: 'clipboard-list', page: 'analytics_dashboard' }, 
                     { name: 'System Settings', icon: 'settings', page: 'settings' },
@@ -566,6 +1011,8 @@
 
             const sidebarClass = state.isSidebarOpen ? 'w-64 translate-x-0' : 'w-0 -translate-x-full md:w-16';
             const innerClass = state.isSidebarOpen ? 'w-64' : 'w-16';
+            
+            const roleDisplay = state.role === ROLES.CITIZEN ? citizenRoleName : state.role;
 
             return `
                 <!-- Mobile Overlay Backdrop -->
@@ -596,10 +1043,10 @@
                         <!-- Footer / Role Info -->
                         <div class="mt-8 border-t border-gray-200 dark:border-slate-800 pt-4 text-sm">
                             <p class="font-medium transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden'}">
-                                ${state.role} Access
+                                ${roleDisplay} Access
                             </p>
                             <p class="text-xs text-slate-500 dark:text-slate-400 transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden'}">
-                                Version 1.0.0
+                                User ID: ${currentUserId ? currentUserId.substring(0, 8) : 'N/A'}
                             </p>
                         </div>
                     </div>
@@ -607,11 +1054,13 @@
             `;
         }
 
-        // 3. HEADER
+        // 3. HEADER (REMAINS AS IS)
         function renderHeader() {
-            const roleName = { ADMIN: 'Administrator', VOLUNTEER: 'Volunteer', CITIZEN: 'Citizen' }[state.role];
-            const iconToggle = state.isDarkMode ? 'sun' : 'moon';
-            const iconSidebar = state.isSidebarOpen ? 'chevron-left' : 'menu';
+            const roleName = { ADMIN: 'Administrator', VOLUNTEER: 'Volunteer', CITIZEN: 'Citizen/Victim' }[state.role];
+            const isDark = document.documentElement.classList.contains('dark');
+            const toggleClass = isDark ? 'dark' : '';
+            const themeLabel = isDark ? 'Dark' : 'Light';
+
 
             return `
                 <header class="sticky top-0 z-30 shadow-md bg-white/90 dark:bg-slate-900/90 backdrop-blur-md sidebar-transition">
@@ -625,13 +1074,21 @@
 
                         <!-- Desktop Sidebar Toggle -->
                         <div class="hidden md:block">
-                            ${IconButton(iconSidebar, 'toggleSidebar()', 'p-3 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700/50')}
+                            ${IconButton(state.isSidebarOpen ? 'chevron-left' : 'menu', 'toggleSidebar()', 'p-3 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700/50')}
                         </div>
                         
                         <!-- User Info & Actions (Right side) -->
-                        <div class="flex items-center space-x-2">
+                        <div class="flex items-center space-x-4">
                             <span class="hidden sm:inline text-sm font-medium text-slate-700 dark:text-gray-300 mr-2">${roleName}</span>
-                            ${IconButton(iconToggle, 'toggleDarkMode()', 'hidden sm:flex')}
+                            
+                            <!-- NEW SLIDER TOGGLE -->
+                            <div class="flex items-center space-x-2">
+                                <span id="theme-label" class="text-sm font-medium text-slate-700 dark:text-gray-300 select-none">${themeLabel}</span>
+                                <div id="themeToggle" onclick="toggleDarkMode()" class="theme-toggle ${toggleClass}">
+                                    <div class="toggle-circle"></div>
+                                </div>
+                            </div>
+                            
                             ${IconButton('log-out', 'handleLogout()', 'text-red-500 hover:bg-red-100 dark:hover:bg-slate-700/50')}
                         </div>
                     </div>
@@ -639,7 +1096,7 @@
             `;
         }
 
-        // 4. MAIN CONTENT ROUTER
+        // 4. MAIN CONTENT ROUTER (REMAINS AS IS)
         function renderMainContent() {
             const contentMap = {
                 // Admin Pages
@@ -647,6 +1104,7 @@
                 'live_map': renderLiveMap,
                 'resource_inventory': renderResourceInventory,
                 'relief_requests': renderAdminReliefRequests, 
+                'organization_donations': renderOrganizationDonations, // NEW
                 'user_management': renderUserManagement,
                 'analytics_dashboard': renderAnalyticsDashboard, 
                 'reports': renderReportsPage, 
@@ -659,7 +1117,7 @@
                 // Citizen Pages
                 'report_incident': renderCitizenReportPage,
                 'request_relief': renderCitizenReliefRequestPage,
-                'my_activity': () => `<h1 class="p-4 sm:p-6 lg:p-8 w-full text-2xl dark:text-white">Citizen Activity History (Placeholder)</h1>`,
+                'my_activity': renderCitizenMyActivity,
             };
 
             const renderer = contentMap[state.currentPage] || (() => `<p class="text-center p-8 dark:text-white">Page Not Found</p>`);
@@ -693,7 +1151,7 @@
                 const summaryHtml = incident.aiSummary ? `<p class="text-sm text-blue-400 mt-2 p-2 bg-blue-900/30 rounded-lg shadow-inner">AI Summary: ${incident.aiSummary}</p>` : '';
                 
                 return `
-                <div class="flex flex-col p-3 rounded-lg border dark:border-slate-700 bg-white dark:bg-slate-700/50">
+                <div class="flex flex-col p-3 rounded-lg border dark:border-slate-700 card-bg">
                     <div class="flex justify-between items-start">
                         <div class="flex items-center space-x-3">
                             <i data-lucide="alert-triangle" class="w-5 h-5 ${getStatusColor(incident.status).replace('bg', 'text')}"></i>
@@ -705,7 +1163,7 @@
                         <div class="flex space-x-2 items-center">
                             ${Button(incident.aiSummary ? 'Summary Ready ✨' : 'Summarize ✨', 'bg-purple-600 hover:bg-purple-700', 'cpu', `summarizeIncident('${incident.id}')`, 'text-xs py-1 px-2', 'button', !!incident.aiSummary)}
                             ${StatusPill(incident.status)}
-                            ${Button(incident.status === 'New' ? 'Review' : 'Resolve', COLORS.primary, '', `updateIncidentStatus('${incident.id}', '${incident.status === 'New' ? 'Under-Review' : 'Resolved'}')`, 'text-sm py-1 px-3 ml-4')}
+                            ${Button(incident.status === 'New' ? 'Review' : 'Resolve', COLORS.primary, '', `updateIncidentStatus('${incident.id}', '${incident.status === 'New' ? 'Under-Review' : 'Resolved'}')`) }
                         </div>
                     </div>
                     <div id="summary-output-${incident.id}"></div>
@@ -723,6 +1181,7 @@
                 </div>
             ` : '';
 
+            // FIX: Ensure text for Admin Overview is clearly visible in both light/dark mode
             return `
                 <div class="p-4 sm:p-6 lg:px-8 space-y-8">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Admin Overview</h1>
@@ -744,135 +1203,45 @@
                         ${Button("Go to Analytics Dashboard", COLORS.primary, 'trending-up', "navigateTo('analytics_dashboard')")}
                     `)}
                     
-                    <!-- Live Incident Map (Simulated) -->
-                    ${Card("Active Incident Map (Simulated)", `
-                        <div class="h-full flex flex-col space-y-2 overflow-y-auto">
-                            ${incidentItems}
-                        </div>
+                    <!-- Live Incident Map (Mini) -->
+                    ${Card("Active Incident Map (Mini)", `
+                        <div id="map-sm" class="h-64 rounded-lg"></div>
                     `, "h-96")}
                 </div>
             `;
         }
         
-        // --- NEW: ANALYTICS DASHBOARD IMPLEMENTATION ---
+        // --- NEW: ANALYTICS DASHBOARD IMPLEMENTATION (Chart.js) ---
         function renderAnalyticsDashboard() {
-            // Data Prep for charts
-            const incidentsByStatus = state.incidents.reduce((acc, i) => {
-                acc[i.status] = (acc[i.status] || 0) + 1;
-                return acc;
-            }, {});
-            const totalIncidentsCount = state.incidents.length;
-
-            const dispatchData = [
-                { month: 'Jan', dispatched: 1200 },
-                { month: 'Feb', dispatched: 1500 },
-                { month: 'Mar', dispatched: 1300 },
-                { month: 'Apr', dispatched: 2000 },
-                { month: 'May', dispatched: 2500 },
-            ];
-            const maxDispatched = Math.max(...dispatchData.map(d => d.dispatched));
-
-            // Chart 1: Incident Status Distribution (Bar Chart)
-            const statusChart = Object.entries(incidentsByStatus).map(([status, count]) => {
-                const percentage = totalIncidentsCount > 0 ? Math.round((count / totalIncidentsCount) * 100) : 0;
-                const color = getStatusColor(status);
-                return `
-                    <div class="flex items-center space-x-3 py-1">
-                        <span class="w-24 text-sm font-medium dark:text-gray-300">${status}</span>
-                        <div class="flex-grow h-6 rounded-lg ${color} shadow-md" style="width: ${percentage}%;">
-                            <span class="text-xs text-white pl-2 leading-6">${count} (${percentage}%)</span>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
-            // Chart 2: Monthly Dispatch Trend (Curve Graph Simulation)
-            const trendChart = `
-                <div class="relative flex justify-between items-end h-48 p-2 border-l border-b border-gray-300 dark:border-slate-600">
-                    <!-- Dots -->
-                    ${dispatchData.map(d => {
-                        const height = (d.dispatched / maxDispatched) * 90 + 10;
-                        return `
-                            <div class="flex flex-col items-center justify-end h-full">
-                                <div class="w-3 h-3 rounded-full bg-blue-600 mb-1 shadow-lg" style="margin-bottom: ${height/2}%;"></div>
-                                <div class="text-xs text-slate-500 dark:text-gray-400 font-medium">${d.month}</div>
-                            </div>
-                        `;
-                    }).join('')}
-                    <!-- Connecting line simulation (SVG) -->
-                    <div class="absolute inset-0 top-0 left-0 right-0 bottom-8">
-                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="w-full h-full" style="opacity: 0.7;">
-                            <polyline fill="none" stroke="#2563EB" stroke-width="2" points="${dispatchData.map((d, i) => {
-                                // Adjusted X coordinate to spread across 100% width
-                                const x = (i / (dispatchData.length - 1)) * 100;
-                                // Y coordinate is inverted (0 is top), scaled to fit chart height
-                                const y = 100 - ((d.dispatched / maxDispatched) * 90 + 10);
-                                return `${x},${y}`;
-                            }).join(' ')}" />
-                        </svg>
-                    </div>
-                </div>
-                <p class="text-center text-xs text-slate-500 dark:text-gray-400 mt-2">Simulated Resource Dispatch Volume Over Time (Units)</p>
-            `;
-            
-            // Chart 3: Volunteer Activity (Doughnut/Ring Chart Simulation)
-            const totalVolunteers = state.users.filter(u => u.role === ROLES.VOLUNTEER).length;
-            const activeVolunteers = Math.round(totalVolunteers * 0.75); // Mock 75% active
-            const activePercentage = totalVolunteers > 0 ? Math.round((activeVolunteers / totalVolunteers) * 100) : 0;
-
-            const ringChart = `
-                <div class="flex items-center justify-center h-48">
-                    <div class="relative w-32 h-32 rounded-full border-8 border-gray-300 dark:border-slate-700">
-                        <div class="absolute inset-0 flex items-center justify-center text-center">
-                            <span class="text-3xl font-bold text-blue-600">${activePercentage}%</span>
-                        </div>
-                        <style>
-                            /* Simple conic gradient to simulate ring chart fill */
-                            .ring-chart {
-                                background: conic-gradient(#2563EB 0% ${activePercentage}%, #475569 ${activePercentage}% 100%);
-                            }
-                        </style>
-                        <div class="ring-chart w-full h-full rounded-full border-4 border-slate-900/50"></div>
-                    </div>
-                </div>
-                <ul class="text-sm space-y-2 mt-4">
-                    <li class="flex justify-between dark:text-gray-300">Active Volunteers: <span class="font-bold text-green-500">${activeVolunteers}</span></li>
-                    <li class="flex justify-between dark:text-gray-300">Total Volunteers: <span class="font-bold">${totalVolunteers}</span></li>
-                </ul>
-            `;
-
-
             return `
                 <div class="p-4 sm:p-6 lg:px-8 space-y-6">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Strategic Analytics Dashboard</h1>
                     <p class="text-slate-600 dark:text-gray-400">Deep-dive analysis of incident response, resource utilization, and team performance.</p>
 
                     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        ${Card("Incident Status Breakdown", `
-                            <div class="space-y-2 py-4">
-                                ${statusChart}
-                            </div>
+                        ${Card("Incident Status Breakdown (Bar Chart)", `
+                            <div class="w-full h-64"><canvas id="chart-status"></canvas></div>
                         `, "lg:col-span-1")}
 
-                        ${Card("Monthly Resource Dispatch Trend", `
-                            <div class="relative w-full h-64 mt-4">
-                                ${trendChart}
-                            </div>
-                        `, "lg:col-span-2")}
-                    </div>
-                    
-                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        ${Card("Volunteer Activity Ratio", `
-                            <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Percentage of volunteers actively logging assignments.</p>
-                            ${ringChart}
+                        ${Card("Volunteer Workload (Doughnut Chart)", `
+                            <div class="w-full h-64"><canvas id="chart-vol-work"></canvas></div>
                         `, "lg:col-span-1")}
-
+                        
                         ${Card("Average Resolution Time (Simulated)", `
-                            <div class="flex flex-col items-center justify-center h-48">
+                            <div class="flex flex-col items-center justify-center h-64">
                                 <span class="text-6xl font-extrabold text-green-500">4.2</span>
                             <span class="text-lg dark:text-gray-300 mt-2">Hours</span>
                         </div>
                         `, "lg:col-span-1")}
+                    </div>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        ${Card("Resource Distribution Report", `
+                            <p class="text-sm dark:text-gray-300 mb-4">View total available vs dispatched resources.</p>
+                            <div class="h-48 flex items-center justify-center bg-gray-100 dark:bg-slate-700 rounded-lg">
+                                [Placeholder: Resource vs. Dispatch Simulation]
+                            </div>
+                        `, "lg:col-span-2")}
                         
                         ${Card("Report Generation & Export", `
                             <p class="text-sm dark:text-gray-300 mb-4">Generate comprehensive historical reports for regulatory compliance and audit purposes.</p>
@@ -886,20 +1255,22 @@
             `;
         }
 
-        // NEW: ADMIN RELIEF REQUESTS REVIEW PAGE
+        // NEW: ADMIN RELIEF REQUESTS REVIEW PAGE (REMAINS AS IS)
         function renderAdminReliefRequests() {
             const volunteers = state.users.filter(u => u.role === ROLES.VOLUNTEER);
+            const resourceOptions = state.resources.map(r => `<option value="${r.type}">${r.type}</option>`).join('');
+            
             const requestItems = state.requests.map(req => {
                 const isNew = req.status === 'New';
                 const isApproved = req.status === 'Approved' || req.status === 'Assigned' || req.status === 'En route';
                 const assignedVolunteer = req.assignedTo ? volunteers.find(v => v.id === req.assignedTo)?.name || 'Unknown' : 'Unassigned';
                 
-                const draftButton = isApproved && !req.aiDraft ? Button("Draft Assignment Message ✨", 'bg-purple-600 hover:bg-purple-700', 'send', `draftAssignmentMessage('${req.id}')`, 'text-xs', 'button') : '';
+                const draftButton = isApproved && !req.aiDraft ? Button("Draft Assignment Message ✨", 'bg-purple-600 hover:bg-purple-700', 'send', `draftAssignmentMessage('${req.id}')`, 'text-xs py-1 px-2', 'button') : '';
                 const draftOutput = req.aiDraft ? `<div class="p-3 mt-2 text-sm bg-blue-900/20 rounded-lg shadow-inner"><p class="font-medium text-blue-400">AI Draft Message:</p> ${req.aiDraft}</div>` : `<div id="draft-output-${req.id}"></div>`;
 
 
                 return `
-                    <div class="p-4 border rounded-xl dark:border-slate-700 bg-white dark:bg-slate-700/50 space-y-3">
+                    <div class="p-4 border rounded-xl dark:border-slate-700 card-bg space-y-3">
                         <div class="flex justify-between items-start">
                             <div class="space-y-1">
                                 <p class="font-bold text-lg">${req.resourceType} (x${req.quantity})</p>
@@ -919,7 +1290,7 @@
                                 ${isNew ? Button("Decline", COLORS.alert, 'x', `updateRequestReview('${req.id}', 'Declined')`, 'text-xs') : ''}
                                 
                                 ${isApproved && !req.assignedTo ? `
-                                    <form onsubmit="handleModalFormSubmit(event, 'assignVolunteer', '${req.id}')" class="flex space-x-1">
+                                    <form id="assign-volunteer-form-${req.id}" data-form-type="assignVolunteerModal" data-request-id="${req.id}" class="flex space-x-1">
                                         <select name="volunteerId" class="p-1 border dark:border-slate-600 rounded-lg text-sm dark:bg-slate-800 dark:text-white" required>
                                             <option value="">Assign...</option>
                                             ${volunteers.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}
@@ -942,6 +1313,57 @@
                         <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Review requests before assigning resources to volunteers.</p>
                         <div class="space-y-4">
                             ${requestItems.length > 0 ? requestItems : '<p class="text-slate-500 dark:text-gray-400">No new or open requests needing review.</p>'}
+                        </div>
+                    `)}
+                </div>
+            `;
+        }
+
+        // NEW: ORGANIZATION DONATIONS PAGE (REMAINS AS IS)
+        function renderOrganizationDonations() {
+            const resourceOptions = state.resources.map(r => `<option value="${r.type}">${r.type}</option>`).join('');
+            
+            const donationRows = state.donations.map(d => `
+                <tr class="hover:bg-gray-50 dark:hover:bg-slate-800">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-purple-600 dark:text-purple-400">${d.organization}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${d.resourceType}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600">${d.quantity}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${new Date(d.date).toLocaleDateString()}</td>
+                </tr>
+            `).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Organization Donation Management (Donor)</h1>
+
+                    ${Card("Log New Large-Scale Donation", `
+                        <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Use this form to log bulk donations. Inventory will be updated automatically.</p>
+                        <form id="log-donation-form" data-form-type="logDonation" class="space-y-4">
+                            <input type="text" name="organization" placeholder="Donating Organization (e.g., Red Cross)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            <select name="resourceType" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required>
+                                <option value="">Select Resource Type</option>
+                                ${resourceOptions}
+                            </select>
+                            <input type="number" name="quantity" min="1" placeholder="Quantity Donated" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            ${Button("Log Donation & Update Inventory", "bg-purple-600 hover:bg-purple-700", "hand-heart", "", "w-full", "submit")}
+                        </form>
+                    `)}
+                    
+                    ${Card("Donation History", `
+                         <div class="overflow-x-auto">
+                            <table class="min-w-full divide-y divide-gray-200 dark:divide-slate-700">
+                                <thead class="bg-gray-50 dark:bg-slate-700">
+                                    <tr>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Organization</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Resource</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Quantity</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-200 dark:divide-slate-700">
+                                    ${donationRows.length > 0 ? donationRows : '<tr><td colspan="4" class="px-6 py-4 text-center text-slate-500">No donations logged yet.</td></tr>'}
+                                </tbody>
+                            </table>
                         </div>
                     `)}
                 </div>
@@ -992,7 +1414,7 @@
         }
         
         function renderUserManagement() {
-            const sortedUsers = [...state.users].sort((a, b) => a.role.localeCompare(b.role));
+            const sortedUsers = state.users.slice().sort((a, b) => a.role.localeCompare(b.role));
             const userList = sortedUsers.map(user => `
                 <li class="flex justify-between items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700/50 transition">
                     <div>
@@ -1033,6 +1455,12 @@
         }
 
         function renderLiveMap() {
+            // Check if map is initialized and update markers when the component renders
+            if (map) {
+                updateMapMarkers();
+                map.invalidateSize(); // Crucial for Leaflet when visibility changes
+            }
+
             return `
                 <div class="p-4 sm:p-6 lg:px-8">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Live Operations Map</h1>
@@ -1044,9 +1472,7 @@
                                 <span class="flex items-center text-xs dark:text-gray-400"><span class="w-3 h-3 bg-amber-500 rounded-full mr-1"></span> In-Progress</span>
                             </div>
                         </div>
-                        <div class="flex-grow bg-gray-300 dark:bg-slate-800 rounded-xl flex items-center justify-center text-slate-500 h-full">
-                            [Placeholder: Google Maps/Leaflet Component Showing Incident Markers and Resource Hubs]
-                        </div>
+                        <div id="map" class="w-full"></div>
                     `, "mt-6 h-[70vh] flex flex-col")}
                 </div>
             `;
@@ -1060,7 +1486,7 @@
                 <div class="p-4 sm:p-6 lg:px-8 space-y-6">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">System Settings</h1>
                     ${Card("Operational Configuration", `
-                        <form id="settings-form" class="space-y-6">
+                        <form id="settings-form" data-form-type="settings" class="space-y-6">
                             <div>
                                 <label class="block text-sm font-medium dark:text-gray-300">High-Priority Incident Threshold</label>
                                 <input type="number" min="1" name="incidentThreshold" value="${currentSettings.incidentThreshold}" class="w-full mt-1 p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" />
@@ -1081,23 +1507,23 @@
                                 </select>
                             </div>
 
-                            ${Button("Save System Settings", COLORS.primary, "settings", "handleSettingsSubmit(event)", "w-full", "submit")}
+                            ${Button("Save System Settings", COLORS.primary, "settings", "", "w-full", "submit")}
                         </form>
                     `)}
                 </div>
             `;
         }
 
-        // VOLUNTEER PAGES
+        // VOLUNTEER PAGES (REMAINS AS IS)
 
         // NEW: Function for Volunteer Assigned Requests
         function renderVolunteerAssignedRequests() {
-            const assignedRequests = state.requests.filter(q => q.assignedTo === MOCK_VOLUNTEER_ID && q.status !== 'Delivered' && q.status !== 'Declined');
+            const assignedRequests = state.requests.filter(q => q.assignedTo === currentUserId && q.status !== 'Delivered' && q.status !== 'Declined');
             const requestItems = assignedRequests.map(req => {
-                const isEnRoute = req.status === 'En route';
+                const isEnRoute = req.status === 'en route';
                 
                 return `
-                    <div class="p-4 border rounded-xl dark:border-slate-700 bg-white dark:bg-slate-700/50 space-y-3">
+                    <div class="p-4 border rounded-xl dark:border-slate-700 card-bg space-y-3">
                         <div class="flex justify-between items-start">
                             <div class="space-y-1">
                                 <p class="font-bold text-lg">${req.resourceType} (x${req.quantity})</p>
@@ -1107,8 +1533,8 @@
                         </div>
                         
                         <div class="flex space-x-2 pt-2 border-t dark:border-slate-800">
-                            ${Button("Mark En Route", COLORS.warning, 'route', `updateRequestStatus('${req.id}', 'En route')`, 'text-xs', 'button', isEnRoute)}
-                            ${Button("Mark Delivered", COLORS.success, 'check-circle', `updateRequestStatus('${req.id}', 'Delivered')`, 'text-xs', 'button', !isEnRoute)}
+                            ${Button("Mark En Route", COLORS.warning, 'route', `updateRequestStatus('${req.id}', 'en route')`, 'text-xs', 'button', isEnRoute)}
+                            ${Button("Mark Delivered", COLORS.success, 'check-circle', `updateRequestStatus('${req.id}', 'Delivered')`, 'text-xs', 'button', isEnRoute ? false : true)}
                         </div>
                     </div>
                 `;
@@ -1117,7 +1543,7 @@
             return `
                 <div class="p-4 sm:p-6 lg:px-8 space-y-6">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">My Assigned Deliveries</h1>
-                    ${Card("Tasks Awaiting Fulfillment (Volunteer ${MOCK_VOLUNTEER_ID})", `
+                    ${Card("Tasks Awaiting Fulfillment (Volunteer ${state.currentUser?.name || 'V-User'})", `
                         <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Complete these tasks in the field, updating the status as you progress.</p>
                         <div class="space-y-4">
                             ${requestItems.length > 0 ? requestItems : '<p class="text-slate-500 dark:text-gray-400">No active delivery requests currently assigned.</p>'}
@@ -1163,7 +1589,7 @@
                 const summaryHtml = incident.aiSummary ? `<p class="text-sm text-blue-400 mt-2 p-2 bg-blue-900/30 rounded-lg shadow-inner">AI Summary: ${incident.aiSummary}</p>` : '';
                 
                 return `
-                <div class="flex flex-col p-3 border rounded-xl dark:border-slate-700 hover:shadow-md transition">
+                <div class="flex flex-col p-3 border rounded-xl dark:border-slate-700 hover:shadow-md transition card-bg">
                     <div class="flex justify-between items-start">
                         <div class="flex items-center space-x-3">
                             <i data-lucide="alert-triangle" class="w-5 h-5 ${getStatusColor(incident.status).replace('bg', 'text')}"></i>
@@ -1195,13 +1621,13 @@
             `;
         }
 
-        // CITIZEN PAGES
+        // CITIZEN PAGES (REMAINS AS IS)
         function renderCitizenReportPage() {
             return `
                 <div class="p-4 sm:p-6 lg:px-8 max-w-lg mx-auto">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white mb-6">Report New Emergency Incident</h1>
                     ${Card("Disaster Report Form", `
-                        <form id="incident-report-form" class="space-y-4">
+                        <form id="incident-report-form" data-form-type="incidentReport" class="space-y-4">
                             <select name="type" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required>
                                 <option value="">Select Incident Type</option>
                                 <option value="Flood">Flood</option>
@@ -1221,7 +1647,7 @@
                             <div class="p-3 bg-gray-100 dark:bg-slate-700/50 rounded-xl text-sm text-slate-600 dark:text-gray-400">
                                 Photo/Video Upload (Simulated Placeholder)
                             </div>
-                            ${Button("Submit Report", COLORS.alert, "alert-triangle", "handleIncidentSubmit(event)", "w-full", "submit")}
+                            ${Button("Submit Report", COLORS.alert, "alert-triangle", "", "w-full", "submit")}
                         </form>
                     `)}
                 </div>
@@ -1235,7 +1661,7 @@
                 <div class="p-4 sm:p-6 lg:px-8 max-w-lg mx-auto">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white mb-6">Request Emergency Relief</h1>
                     ${Card("Request Form", `
-                        <form id="relief-request-form" class="space-y-4">
+                        <form id="relief-request-form" data-form-type="reliefRequest" class="space-y-4">
                             <select name="resourceType" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required>
                                 <option value="">Select Resource Needed</option>
                                 ${resourceOptions}
@@ -1247,17 +1673,54 @@
                                 <option value="Medium" selected>Medium (General Need)</option>
                             </select>
                             <input type="text" name="location" placeholder="Current Location/Delivery Address" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
-                            ${Button("Submit Relief Request", COLORS.primary, "truck", "handleReliefRequestSubmit(event)", "w-full", "submit")}
+                            ${Button("Submit Relief Request", COLORS.primary, "truck", "", "w-full", "submit")}
                         </form>
                     `)}
                 </div>
             `;
         }
+        
+        function renderCitizenMyActivity() {
+            const myIncidents = state.incidents.filter(i => i.reporterId === currentUserId);
+            const myRequests = state.requests.filter(q => q.reporterId === currentUserId);
+            
+            const incidentItems = myIncidents.length === 0 ? 
+                `<p class="text-slate-500 dark:text-gray-400">You have no submitted reports.</p>` :
+                myIncidents.map(i => `
+                    <div class="p-3 border rounded-xl dark:border-slate-700 flex justify-between items-center card-bg">
+                        <div class="flex-1">
+                        <p class="font-medium text-sm">${i.type} at ${i.location}</p>
+                        <p class="text-xs text-slate-500 dark:text-gray-400">Severity: ${i.severity} | Reported: ${new Date(i.timestamp).toLocaleString()}</p>
+                        </div>
+                        ${StatusPill(i.status)}
+                    </div>
+                `).join('');
 
-        // --- Event Listener Handlers (Need to be defined in global scope) ---
+            const requestItems = myRequests.length === 0 ? 
+                `<p class="text-slate-500 dark:text-gray-400">You have no active relief requests.</p>` :
+                myRequests.map(q => `
+                    <div class="p-3 border rounded-xl dark:border-slate-700 flex justify-between items-center card-bg">
+                        <div class="flex-1">
+                        <p class="font-medium text-sm">${q.resourceType} (x${q.quantity})</p>
+                        <p class="text-xs text-slate-500 dark:text-gray-400">Urgency: ${q.urgency} | Assigned: ${q.assignedTo ? 'Yes' : 'No'}</p>
+                        </div>
+                        ${StatusPill(q.status)}
+                    </div>
+                `).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">My Activity & Status</h1>
+                    ${Card("My Submitted Incident Reports", `<div class="space-y-3">${incidentItems}</div>`)}
+                    ${Card("My Resource Requests Status", `<div class="space-y-3">${requestItems}</div>`)}
+                </div>
+            `;
+        }
+
+        // --- Event Listener Handlers (REMAINS AS IS) ---
 
         function handleSettingsSubmit(event) {
-            event.preventDefault();
+            // event.preventDefault() is handled by delegation system
             const form = event.target;
             const newSettings = {
                 incidentThreshold: parseInt(form.incidentThreshold.value),
@@ -1269,11 +1732,10 @@
             navigateTo('dashboard');
         }
 
-        function handleIncidentSubmit(event) {
-            event.preventDefault();
+        async function handleIncidentSubmit(event) {
+            // event.preventDefault() is handled by delegation system
             const form = event.target;
             
-            // FIX: Correctly extract form data using element names
             const newIncident = {
                 type: form.type.value,
                 severity: form.severity.value,
@@ -1281,29 +1743,28 @@
                 location: form.location.value
             };
 
-            // Basic validation to ensure required fields are present
             if (!newIncident.type || !newIncident.location || !newIncident.description) {
                 console.error("Incident submission failed: Required fields are missing.");
-                // In a real app, show a modal/error message here
                 return;
             }
 
-            // Mock API call
-            const incident = {
+            const incidentData = {
                 ...newIncident,
-                id: generateId('I'),
                 status: 'New',
-                reporterId: 'C101', 
+                reporterId: currentUserId || 'C-Anon', 
                 timestamp: Date.now(),
             };
             
-            // Update state and navigate
-            setState({ incidents: [incident, ...state.incidents], currentPage: 'dashboard' });
-            console.log(`Incident Reported: ${incident.type} at ${incident.location}`);
+            if (db) {
+                await addDoc(collection(db, PATHS.incidents), incidentData);
+            }
+            
+            navigateTo('dashboard');
+            console.log(`Incident Reported: ${newIncident.type} at ${newIncident.location}`);
         }
 
-        function handleReliefRequestSubmit(event) {
-            event.preventDefault();
+        async function handleReliefRequestSubmit(event) {
+            // event.preventDefault() is handled by delegation system
             const form = event.target;
             const newRequest = {
                 resourceType: form.resourceType.value,
@@ -1311,19 +1772,43 @@
                 urgency: form.urgency.value,
                 location: form.location.value
             };
-            // Mock API call
-            const request = {
+
+            const requestData = {
                 ...newRequest,
-                id: generateId('Q'),
                 status: 'New',
                 assignedTo: null, 
-                reporterId: 'C101', 
+                reporterId: currentUserId || 'C-Anon', 
+                timestamp: Date.now(),
             };
-            setState({ requests: [...state.requests, request], currentPage: 'dashboard' });
-            console.log(`Relief Request Submitted: ${request.resourceType} x ${request.quantity}`);
+
+            if (db) {
+                await addDoc(collection(db, PATHS.requests), requestData);
+            }
+            
+            navigateTo('dashboard');
+            console.log(`Relief Request Submitted: ${newRequest.resourceType} x ${newRequest.quantity}`);
         }
 
-        // --- Modal & Form Handlers (for Resource and User Management) ---
+        async function handleLogDonationSubmit(event) {
+            // event.preventDefault() is handled by delegation system
+            const form = event.target;
+            const formData = {
+                organization: form.organization.value,
+                resourceType: form.resourceType.value,
+                quantity: form.quantity.value,
+            };
+            
+            if (!formData.organization || !formData.resourceType || !formData.quantity) {
+                console.error("Donation submission failed: Required fields are missing.");
+                return;
+            }
+
+            await logOrganizationDonation(formData);
+            navigateTo('resource_inventory'); // Go to inventory to see the stock update
+            console.log(`Donation Logged: ${formData.organization} donated ${formData.quantity} of ${formData.resourceType}`);
+        }
+
+        // --- Modal & Form Handlers (REMAINS AS IS) ---
 
         function showModal(title, content) {
             const modalHtml = `
@@ -1343,20 +1828,17 @@
 
         function closeModal() {
             document.getElementById('modals-root').innerHTML = '';
-            // Ensure app re-renders to reflect potential data changes if modal submission happened
             renderApp(); 
         }
 
         function showAddResourceModal() {
             const content = `
-                <form id="add-resource-form" onsubmit="handleModalFormSubmit(event, 'addResource')">
-                    <div class="space-y-4">
-                        <input type="text" name="type" placeholder="Resource Name (e.g., Blankets)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
-                        <input type="number" name="available" min="0" placeholder="Initial Available Stock" value="0" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
-                        <input type="text" name="unit" placeholder="Unit (e.g., units, liters)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
-                        <input type="text" name="location" placeholder="Storage Location (e.g., Depot C)" value="Warehouse A" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
-                        ${Button("Create Resource Type", COLORS.primary, "package", "", "w-full", "submit")}
-                    </div>
+                <form id="add-resource-form" data-form-type="addResourceModal" class="space-y-4">
+                    <input type="text" name="type" placeholder="Resource Name (e.g., Blankets)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                    <input type="number" name="available" min="0" placeholder="Initial Available Stock" value="0" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                    <input type="text" name="unit" placeholder="Unit (e.g., units, liters)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                    <input type="text" name="location" placeholder="Storage Location (e.g., Depot C)" value="Warehouse A" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                    ${Button("Create Resource Type", COLORS.primary, "package", "", "w-full", "submit")}
                 </form>
             `;
             showModal("Add New Resource Type", content);
@@ -1365,7 +1847,7 @@
         function showUpdateStockModal(resourceId) {
             const resource = state.resources.find(r => r.id === resourceId);
             const content = `
-                <form id="update-stock-form" onsubmit="handleModalFormSubmit(event, 'updateStock', '${resourceId}')">
+                <form id="update-stock-form" data-form-type="updateStockModal" data-resource-id="${resourceId}" class="space-y-4">
                     <div class="space-y-4">
                         <div class="flex space-x-4 mb-4">
                             <label class="flex items-center space-x-2">
@@ -1388,7 +1870,7 @@
 
         function showAddUserModal() {
             const content = `
-                <form id="add-user-form" onsubmit="handleModalFormSubmit(event, 'addUser')">
+                <form id="add-user-form" data-form-type="addUserModal" class="space-y-4">
                     <div class="space-y-4">
                         <input type="text" name="name" placeholder="User Full Name" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
                         <input type="email" name="email" placeholder="User Email (Google OAuth)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
@@ -1404,36 +1886,32 @@
             showModal("Add New System User", content);
         }
         
-        function handleModalFormSubmit(event, actionType, relatedId = null) {
-            event.preventDefault();
+        async function handleModalFormSubmit(event, actionType, relatedId = null) {
+            event.preventDefault(); // Handled by delegation, but kept for safety in modals
             const form = event.target;
             const formData = {};
 
-            // Extract form data
             Array.from(form.elements).forEach(element => {
                 if (element.name) {
                     formData[element.name] = element.value;
                 }
             });
 
-            if (actionType === 'addResource') {
-                addResource(formData);
-            } else if (actionType === 'updateStock' && relatedId) {
+            if (actionType === 'addResourceModal') {
+                await addResource(formData);
+            } else if (actionType === 'updateStockModal' && relatedId) {
                 const change = parseInt(formData.change);
                 const isDecrease = formData.stockType === 'decrease';
                 const changeAmount = isDecrease ? -Math.abs(change) : Math.abs(change);
-                updateResourceStock(relatedId, changeAmount);
-            } else if (actionType === 'addUser') {
-                addUser(formData);
-            } else if (actionType === 'assignVolunteer' && relatedId) {
-                 assignVolunteer(relatedId, formData.volunteerId);
+                await updateResourceStock(relatedId, changeAmount);
+            } else if (actionType === 'addUserModal') {
+                await addUser(formData);
+            } else if (actionType === 'assignVolunteerModal' && relatedId) {
+                 await assignVolunteer(relatedId, formData.volunteerId);
             }
             
             closeModal();
-            // Re-render the whole app to show updates
-            renderApp();
         }
-
 
         // --- Main Render Loop ---
 
@@ -1455,31 +1933,48 @@
             // Important: Re-initialize Lucide icons after DOM update
             lucide.createIcons();
             
-            // Re-attach specific event listeners after re-render (since inline handlers are limited)
-            if (document.getElementById('citizen-login-form')) {
-                document.getElementById('citizen-login-form').onsubmit = handleCitizenLogin;
-            }
-            if (document.getElementById('incident-report-form')) {
-                document.getElementById('incident-report-form').onsubmit = handleIncidentSubmit;
-            }
-            if (document.getElementById('relief-request-form')) {
-                document.getElementById('relief-request-form').onsubmit = handleReliefRequestSubmit;
-            }
-            if (document.getElementById('settings-form')) {
-                document.getElementById('settings-form').onsubmit = handleSettingsSubmit;
+            // Re-bind the new slider toggle element after rendering the header
+            const toggleElement = document.getElementById('themeToggle');
+            if (toggleElement) {
+                // Initialize the visual state of the slider
+                const isDark = document.documentElement.classList.contains('dark');
+                toggleElement.classList.toggle('dark', isDark);
+                document.getElementById('theme-label').textContent = isDark ? 'Dark' : 'Light';
             }
         }
 
+        // --- FIX: Centralized Form Submission Delegation ---
+        function handleFormSubmissionDelegation(event) {
+            const form = event.target.closest('form');
+            if (!form) return;
+
+            const formType = form.getAttribute('data-form-type');
+            if (!formType) return;
+            
+            event.preventDefault(); // Stop default browser submission behavior
+
+            // Main Forms
+            if (formType === 'citizenLogin') handleCitizenLogin(event);
+            else if (formType === 'incidentReport') handleIncidentSubmit(event);
+            else if (formType === 'reliefRequest') handleReliefRequestSubmit(event);
+            else if (formType === 'settings') handleSettingsSubmit(event);
+            else if (formType === 'logDonation') handleLogDonationSubmit(event);
+
+            // Modal Forms (handled differently as they need the related ID)
+            else if (formType.endsWith('Modal')) {
+                const relatedId = form.getAttribute('data-resource-id') || form.getAttribute('data-request-id') || form.getAttribute('data-form-type');
+                handleModalFormSubmit(event, formType, relatedId);
+            }
+        }
+        // Attach delegation listener globally
+        window.addEventListener('submit', handleFormSubmissionDelegation);
+
+
         // Initial setup on window load
         window.onload = () => {
-            // APPLY INITIAL MODE based on state.isDarkMode
-            if (state.isDarkMode) {
-                document.documentElement.classList.add('dark');
-                document.documentElement.classList.remove('light');
-            } else {
-                document.documentElement.classList.remove('dark');
-                document.documentElement.classList.add('light');
-            }
+            initializeFirebase();
+
+            // --- Theme initialization is now handled by the inline script in <head> ---
             
             // Start the application rendering (will show splash screen first)
             renderApp(); 
@@ -1497,6 +1992,13 @@
                     setState({ isSidebarOpen: false });
                 } else if (window.innerWidth > 768 && !state.isSidebarOpen) {
                     setState({ isSidebarOpen: true });
+                }
+            });
+            
+            // Attach a listener to the window for the new slider element since it is rendered late
+            document.body.addEventListener('click', (e) => {
+                if (e.target.closest('#themeToggle')) {
+                    toggleDarkMode();
                 }
             });
         };
