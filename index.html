@@ -8,6 +8,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Load Lucide Icons for professional visuals -->
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Load Tone.js for optional feedback sound (e.g., notification) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
     <style>
         /* Define custom theme colors and typography for Tailwind */
@@ -30,6 +32,38 @@
         #mobile-overlay {
             background-color: rgba(15, 23, 42, 0.8); /* slate-900/80 */
         }
+        
+        /* --- Splash Screen Animation CSS --- */
+        @keyframes splash-fade-in {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes splash-scale-up {
+            from { transform: scale(0.8); }
+            to { transform: scale(1); }
+        }
+        .splash-animation {
+            animation: splash-fade-in 1s ease-out forwards, splash-scale-up 1s ease-out forwards;
+        }
+        .logo-animation {
+            animation: splash-scale-up 1s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+        }
+        
+        /* Loading spinner for API calls */
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #2563EB;
+            border-radius: 50%;
+            width: 1.5rem;
+            height: 1.5rem;
+            animation: spin 1s linear infinite;
+            margin-right: 0.5rem;
+            display: inline-block;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body class="bg-gray-50 dark:bg-slate-900 text-slate-900 dark:text-gray-100 transition-colors duration-500 min-h-screen">
@@ -46,6 +80,10 @@
 
         const ROLES = { ADMIN: 'ADMIN', VOLUNTEER: 'VOLUNTEER', CITIZEN: 'CITIZEN' };
         
+        // ** API Key is set to empty string for Canvas environment **
+        const apiKey = "";
+        const GEMINI_API_URL_BASE = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
         const COLORS = {
             primary: 'bg-blue-600 hover:bg-blue-700',
             success: 'bg-green-500',
@@ -54,21 +92,22 @@
             bgSoft: 'bg-gray-50 dark:bg-slate-900',
         };
         
-        const MOCK_VOLUNTEER_ID = 'V501'; // Mock ID for Volunteer Bob
-
+        const MOCK_VOLUNTEER_ID = 'V501'; 
+        
         let state = {
-            role: null, // null, ADMIN, VOLUNTEER, CITIZEN
+            isReady: false, 
+            role: null, 
             currentPage: 'dashboard',
             isDarkMode: localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches),
-            isSidebarOpen: window.innerWidth > 768, // Open by default on desktop
+            isSidebarOpen: window.innerWidth > 768, 
             
             // --- Mock Data ---
             incidents: [
-                { id: 'I001', type: 'Flood', severity: 'Critical', description: 'Major flooding in downtown area.', location: '123 Main St', status: 'New', reporterId: 'C101', timestamp: Date.now() - 3600000 },
-                { id: 'I002', type: 'Earthquake Damage', severity: 'High', description: 'Structural damage reported near park.', location: '456 Oak Ave', status: 'Under-Review', reporterId: 'C102', timestamp: Date.now() - 7200000 },
-                { id: 'I003', type: 'Wildfire', severity: 'Medium', description: 'Small brush fire contained.', location: '789 Pine Ln', status: 'Resolved', reporterId: 'C103', timestamp: Date.now() - 10800000 },
-                { id: 'I004', type: 'Earthquake Damage', severity: 'High', description: 'Gas leak reported near school.', location: '789 School Road', status: 'New', reporterId: 'C104', timestamp: Date.now() - 500000 },
-                { id: 'I005', type: 'Medical Emergency', severity: 'Critical', description: 'Hospital overwhelmed.', location: 'City Center', status: 'New', reporterId: 'C105', timestamp: Date.now() - 100000 },
+                { id: 'I001', type: 'Flood', severity: 'Critical', description: 'Major flooding in downtown area. Water level is rising rapidly and reaching the second floor of residential buildings. Immediate evacuation required. Bridge access is blocked.', location: '123 Main St', status: 'New', reporterId: 'C101', timestamp: Date.now() - 3600000 },
+                { id: 'I002', type: 'Earthquake Damage', severity: 'High', description: 'Structural damage reported near park. Several large cracks visible in supporting columns of the Oak Avenue overpass. Public safety hazard. Need structural engineers ASAP.', location: '456 Oak Ave', status: 'Under-Review', reporterId: 'C102', timestamp: Date.now() - 7200000 },
+                { id: 'I003', type: 'Wildfire', severity: 'Medium', description: 'Small brush fire contained by local fire services. Monitoring required for hotspots but no immediate threat to structures.', location: '789 Pine Ln', status: 'Resolved', reporterId: 'C103', timestamp: Date.now() - 10800000 },
+                { id: 'I004', type: 'Earthquake Damage', severity: 'High', description: 'Gas leak reported near school. Evacuation order is in effect. We need utility crews to shut off the main line immediately. High risk of explosion.', location: '789 School Road', status: 'New', reporterId: 'C104', timestamp: Date.now() - 500000 },
+                { id: 'I005', type: 'Medical Emergency', severity: 'Critical', description: 'Hospital overwhelmed due to influx of injured. Running low on basic medical supplies, particularly bandages and pain medication. Need immediate resupply and additional staff.', location: 'City Center', status: 'New', reporterId: 'C105', timestamp: Date.now() - 100000 },
             ],
             resources: [
                 { id: 'R001', type: 'Water Bottles', available: 5000, dispatched: 1200, unit: 'bottles', location: 'Warehouse A' },
@@ -76,9 +115,9 @@
                 { id: 'R003', type: 'Tents (Shelter)', available: 200, dispatched: 50, unit: 'units', location: 'Warehouse A' },
             ],
             requests: [
-                { id: 'Q001', resourceType: 'Water Bottles', quantity: 100, urgency: 'Urgent', location: '123 Main St', status: 'Assigned', assignedTo: MOCK_VOLUNTEER_ID, reporterId: 'C101' },
-                { id: 'Q002', resourceType: 'Medical Kits', quantity: 5, urgency: 'High', location: '456 Oak Ave', status: 'New', assignedTo: null, reporterId: 'C102' },
-                { id: 'Q003', resourceType: 'Tents (Shelter)', quantity: 20, urgency: 'Medium', location: '888 Park Blvd', status: 'Approved', assignedTo: null, reporterId: 'C103' },
+                { id: 'Q001', resourceType: 'Water Bottles', quantity: 100, urgency: 'Urgent', location: '123 Main St', status: 'Assigned', assignedTo: MOCK_VOLUNTEER_ID, reporterId: 'C101', aiDraft: null },
+                { id: 'Q002', resourceType: 'Medical Kits', quantity: 5, urgency: 'High', location: '456 Oak Ave', status: 'New', assignedTo: null, reporterId: 'C102', aiDraft: null },
+                { id: 'Q003', resourceType: 'Tents (Shelter)', quantity: 20, urgency: 'Medium', location: '888 Park Blvd', status: 'Approved', assignedTo: null, reporterId: 'C103', aiDraft: null },
             ],
             users: [
                 { id: 'U100', name: 'Admin User', role: ROLES.ADMIN, email: 'admin@drrms.org' },
@@ -90,7 +129,7 @@
             systemSettings: {
                 incidentThreshold: 5,
                 notificationEmailDomain: '@drrms.org',
-                defaultVolunteerAssignment: 'Manual', // Changed to Manual for review page test
+                defaultVolunteerAssignment: 'Manual',
                 mapDefaultZoom: 12,
             },
         };
@@ -172,13 +211,60 @@
                 </button>
             `;
         }
+        
+        // --- Gemini API Call Utilities ---
+        
+        async function fetchGemini(userQuery, systemPrompt, useGrounding = false) {
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+            
+            if (useGrounding) {
+                payload.tools = [{ "google_search": {} }];
+            }
 
+            try {
+                const response = await fetch(GEMINI_API_URL_BASE, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                
+                if (text) {
+                    let sources = [];
+                    const groundingMetadata = result.candidates?.[0]?.groundingMetadata;
+                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                        sources = groundingMetadata.groundingAttributions
+                            .map(attribution => ({
+                                uri: attribution.web?.uri,
+                                title: attribution.web?.title,
+                            }))
+                            .filter(source => source.uri && source.title);
+                    }
+                    return { text, sources };
+                }
+                return { text: "AI failed to generate a response.", sources: [] };
+
+            } catch (error) {
+                console.error("Gemini API Error:", error);
+                return { text: "Error: Could not reach AI service.", sources: [] };
+            }
+        }
+        
         // --- Core Application Logic / Mock API Handlers ---
 
         function toggleDarkMode() {
+            // FIX: Ensure the HTML root element class is updated immediately and permanently
             const newMode = !state.isDarkMode;
-            
-            // FIX: Ensure the HTML root element class is updated immediately
+
             if (newMode) {
                 document.documentElement.classList.add('dark');
                 document.documentElement.classList.remove('light');
@@ -189,11 +275,12 @@
                 localStorage.setItem('theme', 'light');
             }
             
+            // Only update React state after class is confirmed changed
             setState({ isDarkMode: newMode });
         }
 
         function handleLogout() {
-            // FIX: Direct state reset to avoid browser dialog issues
+            // FIX: Direct state reset to ensure reliable logout
             setState({ role: null, currentPage: 'dashboard', isSidebarOpen: window.innerWidth > 768 });
         }
 
@@ -213,7 +300,6 @@
             setState({ incidents: newIncidents });
         }
         
-        // NEW: Update Request Status (Volunteer/Admin)
         function updateRequestStatus(requestId, newStatus) {
             const newRequests = state.requests.map(req => 
                 req.id === requestId ? { ...req, status: newStatus } : req
@@ -221,6 +307,66 @@
             setState({ requests: newRequests });
         }
 
+        // NEW: AI Incident Summarizer Action
+        async function summarizeIncident(incidentId) {
+            const incident = state.incidents.find(i => i.id === incidentId);
+            if (!incident) return;
+
+            // 1. Set loading state on the specific element
+            const elementId = `summary-output-${incidentId}`;
+            const buttonId = `summary-button-${incidentId}`;
+            const outputElement = document.getElementById(elementId);
+            const buttonElement = document.getElementById(buttonId);
+
+            if (outputElement) outputElement.innerHTML = `<span class="spinner bg-blue-600"></span> Generating summary...`;
+            if (buttonElement) buttonElement.disabled = true;
+
+            const systemPrompt = "You are an emergency operations center AI assistant. Analyze the user's incident report and generate a single, concise, professional one-sentence summary for a quick operational briefing. Focus only on the hazard, location, and immediate operational need (e.g., resources, actions).";
+            const userQuery = `Original Incident Report: "${incident.description}"`;
+
+            const { text } = await fetchGemini(userQuery, systemPrompt, false);
+            
+            // 2. Update state with new AI summary to persist
+            const newIncidents = state.incidents.map(i => 
+                i.id === incidentId ? { ...i, aiSummary: text } : i
+            );
+            
+            // Use setState to trigger full re-render
+            setState({ incidents: newIncidents });
+        }
+
+        // NEW: AI Draft Assignment Action (Grounding Enabled)
+        async function draftAssignmentMessage(requestId) {
+            const request = state.requests.find(q => q.id === requestId);
+            if (!request) return;
+
+            const elementId = `draft-output-${requestId}`;
+            const buttonId = `draft-button-${requestId}`;
+            const outputElement = document.getElementById(elementId);
+            const buttonElement = document.getElementById(buttonId);
+
+            if (outputElement) outputElement.innerHTML = `<span class="spinner bg-blue-600"></span> Drafting message and checking risks...`;
+            if (buttonElement) buttonElement.disabled = true;
+
+            const systemPrompt = `You are an Admin AI drafting an assignment email for a volunteer. Generate a clear, polite, and urgent email body (do not include subject line or salutation/closing). The email must confirm the assignment, detail the resources, list the delivery location, and include a brief 'Safety Advisory' based on current real-time risks for the location.`;
+            
+            const userQuery = `Request details: Resource: ${request.resourceType} (Quantity: ${request.quantity}). Delivery Location: ${request.location}. Urgency: ${request.urgency}. Generate the draft.`;
+
+            const { text, sources } = await fetchGemini(userQuery, systemPrompt, true);
+            
+            let draftText = text;
+            if (sources.length > 0) {
+                const sourceList = sources.map((s, index) => `<a href="${s.uri}" target="_blank" class="text-xs underline text-blue-400">${s.title}</a>`).join(', ');
+                draftText += `<div class="mt-2 text-xs text-slate-500 dark:text-gray-500">Source(s) used for advisory: ${sourceList}</div>`;
+            }
+
+            // Update state with new AI draft to persist
+            const newRequests = state.requests.map(q => 
+                q.id === requestId ? { ...q, aiDraft: draftText } : q
+            );
+            
+            setState({ requests: newRequests });
+        }
 
         // NEW: Add New Resource Type (Admin)
         function addResource(form) {
@@ -261,7 +407,7 @@
         // --- Relief Request Management (Admin) ---
         function updateRequestReview(requestId, newStatus) {
             const newRequests = state.requests.map(req => 
-                req.id === requestId ? { ...req, status: newStatus, assignedTo: null } : req
+                req.id === requestId ? { ...req, status: newStatus, assignedTo: null, aiDraft: null } : req
             );
             setState({ requests: newRequests });
         }
@@ -273,8 +419,23 @@
             setState({ requests: newRequests });
         }
         
-        // --- Component Rendering Functions (Mirroring React structure) ---
+        // --- Component Rendering Functions (HTML Templates) ---
 
+        // NEW: SPLASH SCREEN
+        function renderWelcomeSplash() {
+            const bgColor = state.isDarkMode ? 'bg-slate-900' : 'bg-gray-50';
+            
+            return `
+                <div class="fixed inset-0 flex flex-col items-center justify-center ${bgColor} z-[100] transition-colors duration-500 splash-animation">
+                    <div class="text-center">
+                        <i data-lucide="zap" class="w-20 h-20 text-blue-600 logo-animation mx-auto block"></i>
+                        <h1 class="text-4xl font-black text-slate-900 dark:text-white tracking-wider mt-4">DRRMS</h1>
+                        <p class="text-lg text-slate-600 dark:text-gray-300 mt-2">Disaster Resource Management System</p>
+                    </div>
+                </div>
+            `;
+        }
+        
         // 1. LOGIN SCREEN
         function renderLoginScreen() {
             // New academic information to be displayed
@@ -332,7 +493,7 @@
                     { name: 'Resource Inventory', icon: 'package', page: 'resource_inventory' },
                     { name: 'Relief Requests', icon: 'truck', page: 'relief_requests' },
                     { name: 'User Management', icon: 'users', page: 'user_management' },
-                    { name: 'Reports & Analytics', icon: 'clipboard-list', page: 'analytics_dashboard' }, // RENAMED
+                    { name: 'Reports & Analytics', icon: 'clipboard-list', page: 'analytics_dashboard' }, 
                     { name: 'System Settings', icon: 'settings', page: 'settings' },
                 ],
                 [ROLES.VOLUNTEER]: [
@@ -439,8 +600,8 @@
                 'resource_inventory': renderResourceInventory,
                 'relief_requests': renderAdminReliefRequests, 
                 'user_management': renderUserManagement,
-                'analytics_dashboard': renderAnalyticsDashboard, // NEW ROUTE
-                'reports': renderReportsPage, // Kept for simplicity, but main analytics moved
+                'analytics_dashboard': renderAnalyticsDashboard, 
+                'reports': renderReportsPage, 
                 'settings': renderSystemSettings,
 
                 // Volunteer Pages
@@ -461,7 +622,7 @@
             return `
                 <div class="flex-1 flex flex-col min-h-screen sidebar-transition ${mainContentClass}">
                     ${renderHeader()}
-                    <main class="flex-1 pb-12">
+                    <main class="flex-1">
                         ${renderer()}
                     </main>
                     <footer class="w-full text-center text-xs p-4 border-t border-gray-200 dark:border-slate-800 dark:text-slate-500">
@@ -480,19 +641,29 @@
             const openRequests = state.requests.filter(q => q.status === 'New' || q.status === 'Approved' || q.status === 'Assigned' || q.status === 'En route').length;
             const criticalResources = state.resources.filter(r => r.available < 500).length;
             
-            const incidentItems = state.incidents.filter(i => i.status !== 'Resolved').map(incident => `
-                <div class="flex justify-between items-center p-3 rounded-lg border dark:border-slate-700 bg-white dark:bg-slate-700/50">
-                    <div class="flex items-center space-x-3">
-                        <i data-lucide="alert-triangle" class="w-5 h-5 ${getStatusColor(incident.status).replace('bg', 'text')}"></i>
-                        <div>
-                            <p class="font-semibold">${incident.type} - ${incident.location}</p>
-                            <p class="text-xs text-slate-500 dark:text-gray-400">${incident.description}</p>
+            const incidentItems = state.incidents.filter(i => i.status !== 'Resolved').map(incident => {
+                const summaryHtml = incident.aiSummary ? `<p class="text-sm text-blue-400 mt-2 p-2 bg-blue-900/30 rounded-lg shadow-inner">AI Summary: ${incident.aiSummary}</p>` : '';
+                
+                return `
+                <div class="flex flex-col p-3 rounded-lg border dark:border-slate-700 bg-white dark:bg-slate-700/50">
+                    <div class="flex justify-between items-start">
+                        <div class="flex items-center space-x-3">
+                            <i data-lucide="alert-triangle" class="w-5 h-5 ${getStatusColor(incident.status).replace('bg', 'text')}"></i>
+                            <div>
+                                <p class="font-semibold">${incident.type} - ${incident.location}</p>
+                                <p class="text-xs text-slate-500 dark:text-gray-400">${incident.description.substring(0, 50)}...</p>
+                            </div>
+                        </div>
+                        <div class="flex space-x-2 items-center">
+                            ${Button(incident.aiSummary ? 'Summary Ready ✨' : 'Summarize ✨', 'bg-purple-600 hover:bg-purple-700', 'cpu', `summarizeIncident('${incident.id}')`, 'text-xs py-1 px-2', 'button', !!incident.aiSummary)}
+                            ${StatusPill(incident.status)}
+                            ${Button(incident.status === 'New' ? 'Review' : 'Resolve', COLORS.primary, '', `updateIncidentStatus('${incident.id}', '${incident.status === 'New' ? 'Under-Review' : 'Resolved'}')`, 'text-sm py-1 px-3 ml-4')}
                         </div>
                     </div>
-                    ${StatusPill(incident.status)}
-                    ${Button(incident.status === 'New' ? 'Review' : 'Resolve', COLORS.primary, '', `updateIncidentStatus('${incident.id}', '${incident.status === 'New' ? 'Under-Review' : 'Resolved'}')`, 'text-sm py-1 px-3 ml-4')}
+                    <div id="summary-output-${incident.id}"></div>
+                    ${summaryHtml}
                 </div>
-            `).join('');
+            `}).join('');
 
             // --- PROFESSIONAL FEATURE: LOW RESOURCE ALERT ---
             const lowResourceAlert = criticalResources > 0 ? `
@@ -505,7 +676,7 @@
             ` : '';
 
             return `
-                <div class="p-4 sm:p-6 lg:p-8 space-y-8 w-full">
+                <div class="p-4 sm:p-6 lg:px-8 space-y-8">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Admin Overview</h1>
                     
                     ${lowResourceAlert}
@@ -569,9 +740,10 @@
 
             // Chart 2: Monthly Dispatch Trend (Curve Graph Simulation)
             const trendChart = `
-                <div class="flex justify-between items-end h-48 p-2 border-l border-b border-gray-300 dark:border-slate-600">
+                <div class="relative flex justify-between items-end h-48 p-2 border-l border-b border-gray-300 dark:border-slate-600">
+                    <!-- Dots -->
                     ${dispatchData.map(d => {
-                        const height = (d.dispatched / maxDispatched) * 90 + 10; // Scale height (min 10% for visual)
+                        const height = (d.dispatched / maxDispatched) * 90 + 10;
                         return `
                             <div class="flex flex-col items-center justify-end h-full">
                                 <div class="w-3 h-3 rounded-full bg-blue-600 mb-1 shadow-lg" style="margin-bottom: ${height/2}%;"></div>
@@ -579,11 +751,13 @@
                             </div>
                         `;
                     }).join('')}
-                    <!-- Connecting line simulation -->
-                    <div class="absolute inset-0 h-48 w-full">
+                    <!-- Connecting line simulation (SVG) -->
+                    <div class="absolute inset-0 top-0 left-0 right-0 bottom-8">
                         <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="w-full h-full" style="opacity: 0.7;">
                             <polyline fill="none" stroke="#2563EB" stroke-width="2" points="${dispatchData.map((d, i) => {
+                                // Adjusted X coordinate to spread across 100% width
                                 const x = (i / (dispatchData.length - 1)) * 100;
+                                // Y coordinate is inverted (0 is top), scaled to fit chart height
                                 const y = 100 - ((d.dispatched / maxDispatched) * 90 + 10);
                                 return `${x},${y}`;
                             }).join(' ')}" />
@@ -596,7 +770,6 @@
             // Chart 3: Volunteer Activity (Doughnut/Ring Chart Simulation)
             const totalVolunteers = state.users.filter(u => u.role === ROLES.VOLUNTEER).length;
             const activeVolunteers = Math.round(totalVolunteers * 0.75); // Mock 75% active
-            const inactiveVolunteers = totalVolunteers - activeVolunteers;
             const activePercentage = totalVolunteers > 0 ? Math.round((activeVolunteers / totalVolunteers) * 100) : 0;
 
             const ringChart = `
@@ -622,7 +795,7 @@
 
 
             return `
-                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Strategic Analytics Dashboard</h1>
                     <p class="text-slate-600 dark:text-gray-400">Deep-dive analysis of incident response, resource utilization, and team performance.</p>
 
@@ -650,15 +823,14 @@
                             <div class="flex flex-col items-center justify-center h-48">
                                 <span class="text-6xl font-extrabold text-green-500">4.2</span>
                                 <span class="text-lg dark:text-gray-300 mt-2">Hours</span>
-                                <p class="text-xs text-slate-500 dark:text-gray-400 mt-2">Target: 5.0 Hours</p>
                             </div>
                         `, "lg:col-span-1")}
                         
                         ${Card("Report Generation & Export", `
                             <p class="text-sm dark:text-gray-300 mb-4">Generate comprehensive historical reports for regulatory compliance and audit purposes.</p>
                             <div class="space-y-3 pt-4">
-                                ${Button("Generate Quarterly Report", "bg-slate-600 hover:bg-slate-700", "file-text", "console.log('Generating Quarterly Report')", "w-full")}
-                                ${Button("Export Raw Data (CSV)", "bg-slate-600 hover:bg-slate-700", "download", "console.log('Exporting CSV')", "w-full")}
+                                ${Button("Generate Quarterly Report", "bg-slate-600 hover:bg-slate-700", "file-text", "console.log('Generating Quarterly Report')")}
+                                ${Button("Export Raw Data (CSV)", "bg-slate-600 hover:bg-slate-700", "download", "console.log('Exporting CSV')")}
                             </div>
                         `, "lg:col-span-1")}
                     </div>
@@ -673,6 +845,10 @@
                 const isNew = req.status === 'New';
                 const isApproved = req.status === 'Approved' || req.status === 'Assigned' || req.status === 'En route';
                 const assignedVolunteer = req.assignedTo ? volunteers.find(v => v.id === req.assignedTo)?.name || 'Unknown' : 'Unassigned';
+                
+                const draftButton = isApproved && !req.aiDraft ? Button("Draft Assignment Message ✨", 'bg-purple-600 hover:bg-purple-700', 'send', `draftAssignmentMessage('${req.id}')`, 'text-xs', 'button') : '';
+                const draftOutput = req.aiDraft ? `<div class="p-3 mt-2 text-sm bg-blue-900/20 rounded-lg shadow-inner"><p class="font-medium text-blue-400">AI Draft Message:</p> ${req.aiDraft}</div>` : `<div id="draft-output-${req.id}"></div>`;
+
 
                 return `
                     <div class="p-4 border rounded-xl dark:border-slate-700 bg-white dark:bg-slate-700/50 space-y-3">
@@ -690,10 +866,11 @@
                             </p>
                             
                             <div class="flex space-x-2 flex-wrap">
+                                ${draftButton}
                                 ${isNew ? Button("Approve", COLORS.success, 'check', `updateRequestReview('${req.id}', 'Approved')`, 'text-xs') : ''}
                                 ${isNew ? Button("Decline", COLORS.alert, 'x', `updateRequestReview('${req.id}', 'Declined')`, 'text-xs') : ''}
                                 
-                                ${isApproved && req.status !== 'Assigned' && req.status !== 'En route' ? `
+                                ${isApproved && !req.assignedTo ? `
                                     <form onsubmit="handleModalFormSubmit(event, 'assignVolunteer', '${req.id}')" class="flex space-x-1">
                                         <select name="volunteerId" class="p-1 border dark:border-slate-600 rounded-lg text-sm dark:bg-slate-800 dark:text-white" required>
                                             <option value="">Assign...</option>
@@ -701,15 +878,17 @@
                                         </select>
                                         ${Button("Assign", COLORS.primary, 'user-check', '', 'text-xs', 'submit')}
                                     </form>
-                                ` : isApproved ? StatusPill(req.status) : ''}
+                                ` : ''}
+                                ${req.assignedTo ? StatusPill(req.status) : ''}
                             </div>
                         </div>
+                        ${draftOutput}
                     </div>
                 `;
             }).join('');
 
             return `
-                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Relief Requests Review</h1>
                     ${Card("Open Requests & Allocation", `
                         <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Review requests before assigning resources to volunteers.</p>
@@ -738,7 +917,7 @@
             `).join('');
 
             return `
-                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Resource Inventory Management</h1>
                     ${Button("Add New Resource Type", COLORS.primary, 'package', 'showAddResourceModal()')}
 
@@ -780,7 +959,7 @@
             `).join('');
             
             return `
-                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">User and Role Management</h1>
                     ${Button("Add New System User", COLORS.primary, 'users', 'showAddUserModal()')}
 
@@ -792,7 +971,7 @@
         // Old Reports Page is now Analytics Dashboard
         function renderReportsPage() {
              return `
-                <div class="p-4 sm:p-6 lg:p-8 w-full">
+                <div class="p-4 sm:p-6 lg:px-8">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Reports & Analytics (Legacy)</h1>
                     ${Card("Operational Performance Report", `
                         <p class="dark:text-gray-300">This page is reserved for static report generation. Please use the <a href="#" onclick="navigateTo('analytics_dashboard')" class="underline text-blue-500">Analytics Dashboard</a> for interactive charts.</p>
@@ -807,7 +986,7 @@
 
         function renderLiveMap() {
             return `
-                <div class="p-4 sm:p-6 lg:p-8 w-full">
+                <div class="p-4 sm:p-6 lg:px-8">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Live Operations Map</h1>
                     ${Card("Real-time Incident & Resource Visualization", `
                         <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-slate-700">
@@ -830,7 +1009,7 @@
             
             // This is complex. We'll rely on an event listener attached after render for form submission.
             return `
-                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">System Settings</h1>
                     ${Card("Operational Configuration", `
                         <form id="settings-form" class="space-y-6">
@@ -888,7 +1067,7 @@
             }).join('');
             
             return `
-                <div class="p-4 sm:p-6 lg:p-8 space-y-6 w-full">
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">My Assigned Deliveries</h1>
                     ${Card("Tasks Awaiting Fulfillment (Volunteer ${MOCK_VOLUNTEER_ID})", `
                         <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Complete these tasks in the field, updating the status as you progress.</p>
@@ -901,17 +1080,29 @@
         }
         
         function renderVolunteerDashboard() {
-            // Using the new functional list directly on the dashboard
+            // FIX: Removed redundant H1 from included page renders
+            const assignedRequestsContent = renderVolunteerAssignedRequests();
+            const activeIncidentsContent = renderVolunteerIncidents();
+            
+            // Function to extract content from a page render (everything inside the main content wrapper)
+            const extractCardContent = (html) => {
+                const match = html.match(/<div class="p-4[^>]*>([\s\S]*)<\/div>\s*$/);
+                return match ? match[1].replace(/<h1[^>]*>.*?<\/h1>/, '') : 'No content available.';
+            };
+            
+            const assignedRequestsCardContent = extractCardContent(assignedRequestsContent);
+            const activeIncidentsCardContent = extractCardContent(activeIncidentsContent);
+
             return `
-                <div class="p-4 sm:p-6 lg:p-8 space-y-8 w-full">
+                <div class="p-4 sm:p-6 lg:px-8 space-y-8">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Volunteer Field Dashboard</h1>
                     
                     ${Card("Assigned Delivery Tasks (Immediate Focus)", `
-                        ${renderVolunteerAssignedRequests().replace(/<h1[^>]*>.*?<\/h1>/, '')}
+                        ${assignedRequestsCardContent}
                     `, "space-y-4")}
 
                     ${Card("Active Incidents in My Area (For Awareness)", `
-                        ${renderVolunteerIncidents().replace(/<h1[^>]*>.*?<\/h1>/, '')}
+                        ${activeIncidentsCardContent}
                     `, "space-y-4")}
                 </div>
             `;
@@ -920,18 +1111,31 @@
 
         function renderVolunteerIncidents() {
             const activeIncidents = state.incidents.filter(i => i.status === 'New' || i.status === 'Under-Review');
-            const incidentItems = activeIncidents.map(incident => `
-                <div class="flex justify-between items-start p-3 border rounded-xl dark:border-slate-700 hover:shadow-md transition">
-                    <div>
-                        <p class="font-semibold text-sm">${incident.type} - ${incident.location}</p>
-                        <p class="text-xs text-slate-500 dark:text-gray-400 mt-1">${incident.description}</p>
+            const incidentItems = activeIncidents.map(incident => {
+                const summaryHtml = incident.aiSummary ? `<p class="text-sm text-blue-400 mt-2 p-2 bg-blue-900/30 rounded-lg shadow-inner">AI Summary: ${incident.aiSummary}</p>` : '';
+                
+                return `
+                <div class="flex flex-col p-3 border rounded-xl dark:border-slate-700 hover:shadow-md transition">
+                    <div class="flex justify-between items-start">
+                        <div class="flex items-center space-x-3">
+                            <i data-lucide="alert-triangle" class="w-5 h-5 ${getStatusColor(incident.status).replace('bg', 'text')}"></i>
+                            <div>
+                                <p class="font-semibold text-sm">${incident.type} - ${incident.location}</p>
+                                <p class="text-xs text-slate-500 dark:text-gray-400 mt-1">${incident.description.substring(0, 50)}...</p>
+                            </div>
+                        </div>
+                        <div class="flex space-x-2 items-center">
+                            ${Button(incident.aiSummary ? 'Summary Ready ✨' : 'Summarize ✨', 'bg-purple-600 hover:bg-purple-700', 'cpu', `summarizeIncident('${incident.id}')`, 'text-xs py-1 px-2', 'button', !!incident.aiSummary)}
+                            ${StatusPill(incident.status)}
+                        </div>
                     </div>
-                    ${StatusPill(incident.status)}
+                    <div id="summary-output-${incident.id}"></div>
+                    ${summaryHtml}
                 </div>
-            `).join('');
+            `}).join('');
 
             return `
-                <div class="p-4 sm:p-6 lg:p-8 w-full">
+                <div class="p-4 sm:p-6 lg:px-8">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Active Incidents</h1>
                     ${Card("Current Situational Awareness", `
                         ${activeIncidents.length === 0 
@@ -946,7 +1150,7 @@
         // CITIZEN PAGES
         function renderCitizenReportPage() {
             return `
-                <div class="p-4 sm:p-6 lg:p-8 max-w-lg mx-auto">
+                <div class="p-4 sm:p-6 lg:px-8 max-w-lg mx-auto">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white mb-6">Report New Emergency Incident</h1>
                     ${Card("Disaster Report Form", `
                         <form id="incident-report-form" class="space-y-4">
@@ -980,7 +1184,7 @@
             const resourceOptions = state.resources.map(r => `<option value="${r.type}">${r.type}</option>`).join('');
             
             return `
-                <div class="p-4 sm:p-6 lg:p-8 max-w-lg mx-auto">
+                <div class="p-4 sm:p-6 lg:px-8 max-w-lg mx-auto">
                     <h1 class="text-3xl font-bold text-slate-900 dark:text-white mb-6">Request Emergency Relief</h1>
                     ${Card("Request Form", `
                         <form id="relief-request-form" class="space-y-4">
@@ -1011,7 +1215,7 @@
                 incidentThreshold: parseInt(form.incidentThreshold.value),
                 notificationEmailDomain: form.notificationEmailDomain.value,
                 defaultVolunteerAssignment: form.defaultVolunteerAssignment.value,
-                mapDefaultZoom: state.systemSettings.mapDefaultZoom, // Keep map zoom constant in mock
+                mapDefaultZoom: state.systemSettings.mapDefaultZoom, 
             };
             updateSystemSettings(newSettings);
             navigateTo('dashboard');
@@ -1176,7 +1380,9 @@
         function renderApp() {
             const appRoot = document.getElementById('app-root');
 
-            if (!state.role) {
+            if (!state.isReady) {
+                appRoot.innerHTML = renderWelcomeSplash();
+            } else if (!state.role) {
                 appRoot.innerHTML = `
                     <div class="flex flex-col items-center justify-center min-h-screen w-full p-4">
                         ${renderLoginScreen()}
@@ -1215,9 +1421,16 @@
                 document.documentElement.classList.add('light');
             }
             
-            // Start the application rendering
+            // Start the application rendering (will show splash screen first)
             renderApp(); 
             
+            // Set timeout to transition from splash screen to login
+            setTimeout(() => {
+                if (!state.isReady) { // Only transition if still on splash screen
+                    setState({ isReady: true });
+                }
+            }, 2000); // 2 second display time
+
             // Attach resize listener for sidebar
             window.addEventListener('resize', () => {
                 if (window.innerWidth <= 768 && state.isSidebarOpen) {
