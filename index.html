@@ -204,11 +204,21 @@
                     setLogLevel('debug'); // Enable detailed logging
 
                     // 1. Authenticate
-                    if (initialAuthToken) {
-                        await signInWithCustomToken(auth, initialAuthToken);
-                    } else {
-                        await signInAnonymously(auth);
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (authError) {
+                        // FIX: Catch network errors specifically and failover to guest/mock mode.
+                        console.error("Firebase Auth Network Failure. Falling back to guest/mock mode:", authError);
+                        // If auth fails, we stop data listeners and immediately set ready state.
+                        stopDataListeners();
+                        setState({ isFirebaseReady: true });
+                        return;
                     }
+
 
                     // 2. Set Auth State Listener
                     onAuthStateChanged(auth, (user) => {
@@ -228,10 +238,13 @@
                     });
 
                 } else {
-                    console.error("Firebase configuration is missing.");
+                    console.error("Firebase configuration is missing. Running as guest/mock.");
+                    setState({ isFirebaseReady: true }); // Immediately enable buttons in mock mode
                 }
             } catch (error) {
-                console.error("Firebase initialization or sign-in failed:", error);
+                console.error("Firebase initialization failed:", error);
+                // If initialization fails completely, enable buttons anyway for UX
+                setState({ isFirebaseReady: true });
             }
         }
 
@@ -1561,7 +1574,7 @@
             // Function to extract content from a page render (everything inside the main content wrapper)
             const extractCardContent = (html) => {
                 const match = html.match(/<div class="p-4[^>]*>([\s\S]*)<\/div>\s*$/);
-                return match ? match[1].replace(/<h1[^>]*>.*?<\/h1>/, '') : 'No content available.';
+                return match ? match[1].replace(/<h1[^>]*>.*?<\/h1>/|/<\/?h1>/g, '') : 'No content available.';
             };
             
             const assignedRequestsCardContent = extractCardContent(assignedRequestsContent);
