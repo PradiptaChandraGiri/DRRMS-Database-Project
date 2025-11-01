@@ -183,6 +183,9 @@
         let incidentMarkers = {};
         let charts = {}; 
 
+        // FIX: Moved resourceMarkers here to be correctly scoped and defined
+        let resourceMarkers = {}; 
+
         // Mock Firestore Path structure (Not used, but kept for context)
         const PATHS = {
             incidents: 'mock/incidents',
@@ -1895,6 +1898,10 @@
         window.updateRequestStatus = updateRequestStatus; 
         window.ROLES = ROLES; 
         window.handleCitizenLogin = handleCitizenLogin; // NEW GLOBAL EXPOSURE
+        window.fitAllMarkers = fitAllMarkers;
+        window.centerOnIncidents = centerOnIncidents;
+        window.centerOnResources = centerOnResources;
+
 
         // Attach delegation listener globally
         window.addEventListener('submit', handleFormSubmissionDelegation);
