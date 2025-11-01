@@ -168,6 +168,2048 @@
         import { 
             getFirestore, collection, doc, query, where, onSnapshot, 
             addDoc, updateDoc, deleteDoc, setDoc, arrayUnion, arrayRemove, 
+            getDocs, setLogLevel, getDoc
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Firebase Initialization ---
+        
+        let db, auth;
+        let unsubscribeIncidents, unsubscribeResources, unsubscribeRequests, unsubscribeUsers, unsubscribeDonations;
+        let currentUserId = null;
+        let appId = typeof __app_id !== 'undefined' ? __app_id : 'default-drrms-app';
+        let firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        // FIX: Corrected variable access to use the global __initial_auth_token safely.
+        let initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; 
+
+        // Map and Chart Variables
+        let map = null;
+        let incidentMarkers = {};
+        let charts = {}; // Store Chart.js instances
+
+        // Firestore Collection Paths (Using public shared path)
+        const PATHS = {
+            incidents: `artifacts/${appId}/public/data/incidents`,
+            resources: `artifacts/${appId}/public/data/resources`,
+            requests: `artifacts/${appId}/public/data/requests`,
+            users: `artifacts/${appId}/public/data/users`,
+            donations: `artifacts/${appId}/public/data/donations`, // NEW PATH
+        };
+
+        async function initializeFirebase() {
+            try {
+                if (firebaseConfig) {
+                    const app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    setLogLevel('debug'); // Enable detailed logging
+
+                    // 1. Authenticate
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (authError) {
+                        // FIX: Catch network errors specifically and failover to guest/mock mode.
+                        console.error("Firebase Auth Network Failure. Falling back to guest/mock mode:", authError);
+                        // If auth fails, we stop data listeners and immediately set ready state.
+                        stopDataListeners();
+                        setState({ isFirebaseReady: true });
+                        return;
+                    }
+
+
+                    // 2. Set Auth State Listener
+                    onAuthStateChanged(auth, (user) => {
+                        if (user) {
+                            currentUserId = user.uid;
+                            // Ensure the user entry exists in our 'users' collection
+                            ensureUserRecord(user.uid, auth.currentUser.email);
+                            startDataListeners();
+                        } else {
+                            currentUserId = null;
+                            stopDataListeners();
+                        }
+                        // FIX: Set the flag AFTER the listener has confirmed the initial auth state.
+                        if (!state.isFirebaseReady) {
+                            setState({ isFirebaseReady: true });
+                        }
+                    });
+
+                } else {
+                    console.error("Firebase configuration is missing. Running as guest/mock.");
+                    setState({ isFirebaseReady: true }); // Immediately enable buttons in mock mode
+                }
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                // If initialization fails completely, enable buttons anyway for UX
+                setState({ isFirebaseReady: true });
+            }
+        }
+
+        async function ensureUserRecord(uid, email) {
+            const userDocRef = doc(db, PATHS.users, uid);
+            const userDoc = await getDoc(userDocRef);
+
+            if (!userDoc.exists()) {
+                // If it's a new anonymous user, give them the citizen role by default
+                await setDoc(userDocRef, {
+                    id: uid,
+                    name: `GuestUser-${uid.substring(0, 6)}`,
+                    email: email || `guest_${uid}@drrms.org`,
+                    role: ROLES.CITIZEN,
+                    createdAt: Date.now(),
+                });
+            }
+        }
+
+        // --- Data Listeners ---
+
+        function startDataListeners() {
+            if (!db) return;
+
+            // Incidents Listener
+            unsubscribeIncidents = onSnapshot(collection(db, PATHS.incidents), (snapshot) => {
+                const incidents = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ incidents: incidents });
+                updateMapMarkers(); // Update map markers on incident change
+                updateCharts();      // Update charts on incident change
+            });
+
+            // Resources Listener
+            unsubscribeResources = onSnapshot(collection(db, PATHS.resources), (snapshot) => {
+                const resources = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ resources: resources });
+                // If resources are empty, seed initial data for usability
+                if (resources.length === 0) {
+                    seedInitialResources();
+                }
+                updateMapMarkers(); // Update map markers on resource change
+            });
+
+            // Requests Listener
+            unsubscribeRequests = onSnapshot(collection(db, PATHS.requests), (snapshot) => {
+                const requests = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ requests: requests });
+                updateCharts();
+            });
+
+             // Users Listener (for admin view and assignment dropdowns)
+            unsubscribeUsers = onSnapshot(collection(db, PATHS.users), (snapshot) => {
+                const users = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ users: users, 
+                           currentUser: users.find(u => u.id === currentUserId) || state.currentUser });
+                updateCharts();
+            });
+            
+             // Donations Listener (NEW)
+            unsubscribeDonations = onSnapshot(collection(db, PATHS.donations), (snapshot) => {
+                const donations = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setState({ donations: donations });
+            });
+        }
+        
+        function stopDataListeners() {
+            if (unsubscribeIncidents) unsubscribeIncidents();
+            if (unsubscribeResources) unsubscribeResources();
+            if (unsubscribeRequests) unsubscribeRequests();
+            if (unsubscribeUsers) unsubscribeUsers();
+            if (unsubscribeDonations) unsubscribeDonations(); // NEW
+        }
+
+        // --- Data Seeding (Initial Mock Data moved to Firestore Seed) ---
+        async function seedInitialResources() {
+            const initialResources = [
+                // Added Lat/Lng for map functionality (near Rourkela, India)
+                { type: 'Water Bottles', available: 5000, dispatched: 1200, unit: 'bottles', location: 'Warehouse A', lat: 22.25, lng: 84.85 },
+                { type: 'Medical Kits', available: 850, dispatched: 150, unit: 'kits', location: 'Depot B', lat: 22.28, lng: 84.88 },
+                { type: 'Tents (Shelter)', available: 200, dispatched: 50, unit: 'units', location: 'Warehouse A', lat: 22.25, lng: 84.85 },
+            ];
+            
+            for (const res of initialResources) {
+                await addDoc(collection(db, PATHS.resources), res);
+            }
+            console.log("Initial resources seeded to Firestore.");
+        }
+
+
+        // --- Global Configuration & State ---
+
+        const ROLES = { 
+            ADMIN: 'ADMIN', 
+            VOLUNTEER: 'VOLUNTEER', 
+            CITIZEN: 'CITIZEN' // Representing the general public/Victims
+        };
+        
+        // *******************************************************************
+        // ********************* ACTION REQUIRED *****************************
+        // *******************************************************************
+        // The AI features (Summarize/Draft Message) require a valid Gemini API Key.
+        // You MUST replace the empty string below with your own Gemini API Key 
+        // for those buttons to function.
+        const apiKey = ""; // <--- INSERT YOUR GEMINI API KEY HERE
+        // *******************************************************************
+        
+        const GEMINI_API_URL_BASE = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        const COLORS = {
+            primary: 'bg-blue-600 hover:bg-blue-700',
+            success: 'bg-green-500',
+            alert: 'bg-red-500',
+            warning: 'bg-amber-500',
+            bgSoft: 'bg-gray-50 dark:bg-slate-900',
+        };
+        
+        let state = {
+            isReady: false, 
+            role: null, 
+            currentPage: 'dashboard',
+            // FIX: This initial state is only a placeholder. The real value is read in window.onload.
+            isDarkMode: localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches),
+            isSidebarOpen: window.innerWidth > 768, 
+            
+            // --- Data is now populated by Firestore listeners ---
+            incidents: [], 
+            resources: [],
+            requests: [],
+            users: [],
+            donations: [], // NEW STATE
+            currentUser: null,
+            isFirebaseReady: false, // NEW: State flag for authentication readiness
+
+            systemSettings: {
+                incidentThreshold: 5,
+                notificationEmailDomain: '@drrms.org',
+                defaultVolunteerAssignment: 'Manual',
+                mapDefaultZoom: 12,
+            },
+        };
+
+        // --- Utility Functions ---
+
+        // Re-renders the entire application when state changes
+        function setState(newState) {
+            // Merge state
+            state = { ...state, ...newState };
+            
+            // If user data changes, update the derived role state
+            if (state.currentUser && state.role === null) {
+                setState({ role: state.currentUser.role });
+            }
+
+            renderApp();
+            
+            // Re-run map/chart updates immediately after rendering to ensure elements exist
+            if (state.isReady && state.role) {
+                if (state.currentPage === 'live_map' || state.currentPage === 'dashboard') {
+                    // Only re-init map if it's the live map page
+                    if (state.currentPage === 'live_map') {
+                         setTimeout(initMap, 100);
+                    }
+                }
+                if (state.currentPage === 'analytics_dashboard') {
+                    setTimeout(updateCharts, 100);
+                }
+            }
+        }
+
+        // Simple ID Generator (simulating MongoDB object IDs)
+        const generateId = (prefix) => prefix + (Math.random() * 100000 | 0).toString().padStart(4, '0');
+
+        function getStatusColor(status) {
+            switch (status) {
+                case 'New':
+                case 'Critical':
+                case 'Pending':
+                    return 'bg-red-500';
+                case 'Under-Review':
+                case 'High':
+                case 'Assigned':
+                case 'En route':
+                case 'Medium':
+                    return 'bg-amber-500';
+                case 'Resolved':
+                case 'Actioned':
+                case 'Delivered':
+                case 'Approved':
+                    return 'bg-green-500';
+                case 'Declined':
+                    return 'bg-gray-500';
+                case 'ADMIN':
+                    return 'bg-red-600';
+                case 'VOLUNTEER':
+                    return 'bg-sky-600';
+                case 'CITIZEN':
+                    return 'bg-blue-600';
+                case 'Organization': // For Donations
+                    return 'bg-purple-500';
+                default:
+                    return 'bg-gray-500';
+            }
+        }
+
+        function StatusPill(status) {
+            return `<span class="${getStatusColor(status)} text-white text-xs font-semibold px-3 py-1 rounded-full uppercase tracking-wider shadow-md">${status}</span>`;
+        }
+        
+        function Card(title, content, className = '') {
+            const header = title ? `<h2 class="text-xl font-bold mb-4 text-slate-900 dark:text-gray-100 border-b pb-2 border-gray-200 dark:border-slate-700">${title}</h2>` : '';
+            // Apply card-bg class for theme consistency
+            return `
+                <div class="p-6 rounded-3xl shadow-xl border border-gray-200 dark:border-slate-800 card-bg backdrop-blur-md transition duration-300 ease-in-out transform hover:shadow-xl hover:-translate-y-1 ${className}">
+                    ${header}
+                    ${content}
+                </div>
+            `;
+        }
+
+        function Button(text, color, iconName, onClickScript, className = '', type = 'button', disabled = false) {
+            const disabledClass = disabled ? 'opacity-50 cursor-not-allowed' : '';
+            const icon = iconName ? `<i data-lucide="${iconName}" class="w-5 h-5 inline mr-2"></i>` : '';
+            return `
+                <button 
+                    type="${type}" 
+                    onclick="${disabled ? '' : onClickScript}" 
+                    ${disabled ? 'disabled' : ''}
+                    class="${color} text-white font-medium py-2 px-4 rounded-xl shadow-lg focus:outline-none focus:ring-4 focus:ring-opacity-50 active:scale-95 transition duration-150 ${disabledClass} ${className}">
+                    ${icon}
+                    ${text}
+                </button>
+            `;
+        }
+        
+        function IconButton(iconName, onClickScript, className = '') {
+            return `
+                <button onclick="${onClickScript}" class="p-2 rounded-full text-slate-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-700 transition active:scale-95 ${className}">
+                    <i data-lucide="${iconName}" class="w-5 h-5"></i>
+                </button>
+            `;
+        }
+        
+        // --- Gemini API Call Utilities (REMAINS AS IS) ---
+        
+        async function fetchGemini(userQuery, systemPrompt, useGrounding = false) {
+            // FIX: Check if apiKey is defined and not empty
+            if (!apiKey) {
+                return { text: "AI Summary: Incident summary cannot be generated; please provide hazard type, location, and immediate resource requirements.", sources: [] };
+            }
+            
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+            
+            if (useGrounding) {
+                payload.tools = [{ "google_search": {} }];
+            }
+
+            try {
+                const response = await fetch(GEMINI_API_URL_BASE, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                
+                if (text) {
+                    let sources = [];
+                    const groundingMetadata = result.candidates?.[0]?.groundingMetadata;
+                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                        sources = groundingMetadata.groundingAttributions
+                            .map(attribution => ({
+                                uri: attribution.web?.uri,
+                                title: attribution.web?.title,
+                            }))
+                            .filter(source => source.uri && source.title);
+                    }
+                    return { text, sources };
+                }
+                return { text: "AI failed to generate a response.", sources: [] };
+
+            } catch (error) {
+                console.error("Gemini API Error:", error);
+                return { text: "Error: Could not reach AI service.", sources: [] };
+            }
+        }
+        
+        // --- Core Global Functions ---
+        
+        function toggleDarkMode() {
+            let newMode = !state.isDarkMode;
+
+            // Update DOM class for styling
+            document.documentElement.classList.toggle('dark', newMode);
+            document.documentElement.classList.toggle('light', !newMode);
+            localStorage.setItem('theme', newMode ? 'dark' : 'light');
+
+            // Update the slider component visually
+            const toggleElement = document.getElementById('themeToggle');
+            if (toggleElement) {
+                toggleElement.classList.toggle('dark', newMode);
+                document.getElementById('theme-label').textContent = newMode ? 'Dark' : 'Light';
+            }
+            
+            // Set state and re-render
+            setState({ isDarkMode: newMode });
+        }
+
+        // FIX: Implemented logic for citizen login (simulated)
+        async function handleCitizenLogin(event) {
+            event.preventDefault(); 
+            
+            if (!state.isFirebaseReady || !currentUserId) {
+                 console.error("Citizen login failed: Firebase not ready or User ID not available.");
+                 return;
+            }
+            
+            const form = event.target;
+            const email = form['citizen-email'].value;
+            
+            // 1. Ensure the user's record exists/has the correct role
+            await ensureUserRecord(currentUserId, email);
+
+            // 2. Trigger state change to update role and navigate
+            setState({ role: ROLES.CITIZEN, currentPage: 'dashboard' });
+            console.log(`Citizen login simulated for user: ${currentUserId}`);
+        }
+        
+        function handleLogout() {
+            // FIX: Reinforced state reset to guarantee the application returns to the login screen
+            if (auth) {
+                auth.signOut().then(() => {
+                    // Sign out success
+                    setState({ 
+                        role: null, 
+                        currentPage: 'dashboard', 
+                        isSidebarOpen: window.innerWidth > 768,
+                        currentUser: null
+                    });
+                }).catch((error) => {
+                    // If sign out fails (e.g., no network), still force UI reset
+                    console.error("Firebase SignOut failed, forcing UI reset:", error);
+                    setState({ 
+                        role: null, 
+                        currentPage: 'dashboard', 
+                        isSidebarOpen: window.innerWidth > 768,
+                        currentUser: null
+                    });
+                });
+            } else {
+                    // If auth object isn't defined yet, just reset UI state
+                setState({ 
+                    role: null, 
+                    currentPage: 'dashboard', 
+                    isSidebarOpen: window.innerWidth > 768,
+                    currentUser: null
+                });
+            }
+        }
+
+        function navigateTo(pageKey) {
+            setState({ currentPage: pageKey });
+        }
+        
+        function toggleSidebar() {
+            setState({ isSidebarOpen: !state.isSidebarOpen });
+        }
+
+        // Incident status update (Admin) 
+        async function updateIncidentStatus(id, newStatus) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.incidents, id);
+            await updateDoc(docRef, { status: newStatus });
+        }
+        
+        // Request status update
+        async function updateRequestStatus(requestId, newStatus) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.requests, requestId);
+            await updateDoc(docRef, { status: newStatus });
+        }
+
+        // AI Incident Summarizer Action
+        async function summarizeIncident(incidentId) {
+            const incident = state.incidents.find(i => i.id === incidentId);
+            if (!incident || !db) return;
+
+            const systemPrompt = "You are an emergency operations center AI assistant. Analyze the user's incident report and generate a single, concise, professional one-sentence summary for a quick operational briefing. Focus only on the hazard, location, and immediate operational need (e.g., resources, actions).";
+            const userQuery = `Original Incident Report: "${incident.description}"`;
+
+            // Display loading state (this requires a re-render or DOM manipulation outside setState)
+            const elementId = `summary-output-${incidentId}`;
+            const outputElement = document.getElementById(elementId);
+            if (outputElement) outputElement.innerHTML = `<span class="spinner bg-blue-600"></span> Generating summary...`;
+            
+            const { text } = await fetchGemini(userQuery, systemPrompt, false);
+            
+            // Update Firestore with new AI summary to persist
+            const docRef = doc(db, PATHS.incidents, incidentId);
+            await updateDoc(docRef, { aiSummary: text });
+            
+            // Firestore listener will handle UI update
+        }
+
+        // AI Draft Assignment Action (Grounding Enabled)
+        async function draftAssignmentMessage(requestId) {
+            const request = state.requests.find(q => q.id === requestId);
+            if (!request || !db) return;
+
+            // Display loading state
+            const elementId = `draft-output-${requestId}`;
+            const outputElement = document.getElementById(elementId);
+            if (outputElement) outputElement.innerHTML = `<span class="spinner bg-blue-600"></span> Drafting message and checking risks...`;
+
+            const systemPrompt = `You are an Admin AI drafting an assignment email for a volunteer. Generate a clear, polite, and urgent email body (do not include subject line or salutation/closing). The email must confirm the assignment, detail the resources, list the delivery location, and include a brief 'Safety Advisory' based on current real-time risks for the location.`;
+            
+            const userQuery = `Request details: Resource: ${request.resourceType} (Quantity: ${request.quantity}). Delivery Location: ${request.location}. Urgency: ${request.urgency}. Generate the draft.`;
+
+            const { text, sources } = await fetchGemini(userQuery, systemPrompt, true);
+            
+            let draftText = text;
+            if (sources.length > 0) {
+                const sourceList = sources.map((s, index) => `<a href="${s.uri}" target="_blank" class="text-xs underline text-blue-400">${s.title}</a>`).join(', ');
+                draftText += `<div class="mt-2 text-xs text-slate-500 dark:text-gray-500">Source(s) used for advisory: ${sourceList}</div>`;
+            }
+
+            // Update Firestore with new AI draft to persist
+            const docRef = doc(db, PATHS.requests, requestId);
+            await updateDoc(docRef, { aiDraft: draftText });
+            
+            // Firestore listener will handle UI update
+        }
+
+        // Add New Resource Type (Admin)
+        async function addResource(form) {
+            if (!db) return;
+            const newResource = {
+                type: form.type,
+                available: parseInt(form.available) || 0,
+                dispatched: 0,
+                unit: form.unit,
+                location: form.location,
+            };
+            await addDoc(collection(db, PATHS.resources), newResource);
+        }
+
+        // Update Stock for Existing Resource (Admin)
+        async function updateResourceStock(id, changeAmount) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.resources, id);
+            
+            // Use Firestore field increment/decrement if possible, or calculate new value
+            const resource = state.resources.find(r => r.id === id);
+            const newAvailable = Math.max(0, resource.available + changeAmount);
+            
+            await updateDoc(docRef, { available: newAvailable });
+        }
+        
+        // NEW: Log Organization Donation (Admin)
+        async function logOrganizationDonation(formData) {
+            if (!db) return;
+            
+            const donationData = {
+                organization: formData.organization,
+                resourceType: formData.resourceType,
+                quantity: parseInt(formData.quantity) || 0,
+                date: new Date().toISOString(),
+                loggedBy: currentUserId,
+            };
+
+            // 1. Log the Donation
+            await addDoc(collection(db, PATHS.donations), donationData);
+            
+            // 2. Immediately Update Resource Inventory
+            const resource = state.resources.find(r => r.type === formData.resourceType);
+            if (resource) {
+                const docRef = doc(db, PATHS.resources, resource.id);
+                // Increase available stock by the donation quantity
+                const newAvailable = resource.available + donationData.quantity;
+                await updateDoc(docRef, { available: newAvailable });
+            } else {
+                console.error(`Resource type ${formData.resourceType} not found for stock update.`);
+            }
+        }
+
+
+        // Add New User (Admin)
+        async function addUser(form) {
+            if (!db) return;
+            const user = { 
+                name: form.name, 
+                email: form.email, 
+                role: form.role,
+                createdAt: Date.now()
+            };
+            // NOTE: For a real app, this would use Firebase Admin SDK to create the user, then save profile data.
+            // Here, we just save the profile data to our collection.
+            await addDoc(collection(db, PATHS.users), user);
+        }
+        
+        // Update System Settings (Admin)
+        async function updateSystemSettings(newSettings) {
+            // Note: Since settings are simple, we'll store them in local storage/state for simplicity
+            // In a real app, this would be a single document in Firestore.
+            setState({ systemSettings: newSettings });
+            console.log("System settings updated (in-memory/local).");
+        }
+
+        // Relief Request Management (Admin)
+        async function updateRequestReview(requestId, newStatus) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.requests, requestId);
+            await updateDoc(docRef, { status: newStatus, assignedTo: null, aiDraft: null });
+        }
+
+        async function assignVolunteer(requestId, volunteerId) {
+            if (!db) return;
+            const docRef = doc(db, PATHS.requests, requestId);
+            await updateDoc(docRef, { assignedTo: volunteerId, status: 'Assigned' });
+        }
+        
+        // --- MAP FUNCTIONS (New) ---
+
+        function initMap() {
+            const mapEl = document.getElementById('map');
+            if (!mapEl) return; 
+
+            // Destroy existing map instance if it exists
+            if (map && map._container && map._container.id === 'map') {
+                map.remove();
+                map = null;
+            }
+
+            // Default view near Rourkela, India
+            const defaultLat = 22.26;
+            const defaultLng = 84.85; 
+
+            try {
+                // Initialize Map with a view (Default Zoom 12)
+                map = L.map('map', { zoomControl: true }).setView([defaultLat, defaultLng], state.systemSettings.mapDefaultZoom);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; OpenStreetMap contributors'
+                }).addTo(map);
+
+                updateMapMarkers();
+                console.log("Leaflet map initialized.");
+
+            } catch (error) {
+                console.error("Error initializing map:", error);
+            }
+        }
+
+        function updateMapMarkers() {
+            if (!map) return;
+
+            // Clear existing markers
+            Object.values(incidentMarkers).forEach(m => map.removeLayer(m));
+            incidentMarkers = {};
+
+            // Add Incident Markers
+            state.incidents.forEach(i => {
+                if (i.lat && i.lng) {
+                    const color = getStatusColor(i.severity).replace('bg-', ''); // Get base color name
+                    const customIcon = L.divIcon({
+                        className: 'custom-div-icon',
+                        html: `<i data-lucide="alert-triangle" class="w-6 h-6 text-${color} drop-shadow-md"></i>`,
+                        iconSize: [24, 24],
+                        iconAnchor: [12, 24]
+                    });
+
+                    const marker = L.marker([i.lat, i.lng], { icon: customIcon }).addTo(map);
+                    marker.bindPopup(`<strong>${i.type}</strong><br>${i.location}<br>Status: ${i.status}`);
+                    incidentMarkers[i.id] = marker;
+                }
+            });
+
+            // Add Resource Hub Markers (Simulated)
+            const resourceHubs = state.resources.filter(r => r.lat && r.lng);
+            resourceHubs.forEach(r => {
+                const customIcon = L.divIcon({
+                    className: 'custom-div-icon',
+                    html: `<i data-lucide="package" class="w-6 h-6 text-green-500 drop-shadow-md"></i>`,
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 24]
+                });
+                const marker = L.marker([r.lat, r.lng], { icon: customIcon }).addTo(map);
+                marker.bindPopup(`<strong>Resource Hub: ${r.location}</strong><br>Available: ${r.available} ${r.unit}`);
+            });
+            
+            // Re-render Lucide icons for the custom map markers
+            lucide.createIcons();
+        }
+
+        // --- CHART FUNCTIONS (New) ---
+
+        function updateCharts() {
+            // Destroy existing chart instances before redrawing
+            Object.values(charts).forEach(chart => {
+                if (chart && typeof chart.destroy === 'function') {
+                    chart.destroy();
+                }
+            });
+            charts = {};
+
+            // 1. Incident Status Breakdown (Bar Chart)
+            const statusCtx = document.getElementById('chart-status')?.getContext('2d');
+            if (statusCtx) {
+                const statusCounts = state.incidents.reduce((acc, i) => {
+                    acc[i.status] = (acc[i.status] || 0) + 1;
+                    return acc;
+                }, {});
+
+                const labels = Object.keys(statusCounts);
+                const data = Object.values(statusCounts);
+
+                charts.status = new Chart(statusCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{ 
+                            label: 'Incidents', 
+                            data: data, 
+                            backgroundColor: labels.map(s => {
+                                switch(s) {
+                                    case 'New': return '#EF4444'; 
+                                    case 'Under-Review': return '#F59E0B';
+                                    case 'Resolved': return '#10B981';
+                                    default: return '#3B82F6';
+                                }
+                            }) 
+                        }]
+                    },
+                    options: { 
+                        responsive: true, 
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true } }
+                    }
+                });
+            }
+
+            // 2. Volunteer Workload (Doughnut Chart)
+            const workloadCtx = document.getElementById('chart-vol-work')?.getContext('2d');
+            if (workloadCtx) {
+                const volunteerWorkload = state.users
+                    .filter(u => u.role === ROLES.VOLUNTEER)
+                    .map(v => ({
+                        name: v.name,
+                        count: state.requests.filter(r => r.assignedTo === v.id && r.status !== 'Delivered').length,
+                    }));
+
+                const labels = volunteerWorkload.map(w => w.name);
+                const data = volunteerWorkload.map(w => w.count);
+
+                charts.volWork = new Chart(workloadCtx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: labels,
+                        datasets: [{ 
+                            data: data, 
+                            backgroundColor: ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#6366F1'] 
+                        }]
+                    },
+                    options: { 
+                        responsive: true, 
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } }
+                    }
+                });
+            }
+        }
+
+        // --- Component Rendering Functions (HTML Templates) ---
+
+        // NEW: SPLASH SCREEN (REMAINS AS IS)
+        function renderWelcomeSplash() {
+            const bgColor = state.isDarkMode ? 'bg-slate-900' : 'bg-gray-50';
+            
+            return `
+                <div class="fixed inset-0 z-[100] flex flex-col items-center justify-center ${bgColor} transition-colors duration-500 splash-animation">
+                    <div class="text-center">
+                        <i data-lucide="zap" class="w-20 h-20 text-blue-600 logo-animation mx-auto block"></i>
+                        <h1 class="text-4xl font-black text-slate-900 dark:text-white tracking-wider mt-4">DRRMS</h1>
+                        <p class="text-lg text-slate-600 dark:text-gray-300 mt-2">Disaster Resource Management System</p>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // 1. LOGIN SCREEN (REMAINS AS IS)
+        function renderLoginScreen() {
+            // New academic information to be displayed
+            const academicInfo = `
+                <div class="mt-8 text-center text-xs text-slate-500 dark:text-slate-400 border-t pt-4 border-gray-300 dark:border-slate-700">
+                    <p class="font-bold mb-1">Developed for Database Engineering Project</p>
+                    <p>Name: Pradipta Chandra Giri</p>
+                    <p>Roll No: 2402110050 | Group: CSE A1</p>
+                </div>
+            `;
+            
+            // Check if Firebase is ready to enable login buttons
+            const isLoginEnabled = state.isFirebaseReady;
+            const loginDisabledClass = isLoginEnabled ? '' : 'opacity-50 cursor-not-allowed';
+            const loadingIndicator = isLoginEnabled ? '' : '<span class="text-xs text-amber-500 flex items-center justify-center mb-2"><span class="spinner"></span>Initializing...</span>';
+
+
+            return Card("DRRMS Login", `
+                <h3 class="text-2xl font-bold text-center mb-6 text-blue-600">Disaster Resource Management</h3>
+                
+                <p class="text-sm text-center mb-4 text-slate-600 dark:text-gray-400">
+                    Admin/Volunteer access requires Google OAuth:
+                </p>
+                
+                ${loadingIndicator}
+
+                <div class="space-y-4 mb-8 ${loginDisabledClass}">
+                    ${Button("Login as Administrator", "bg-red-600 hover:bg-red-700", "zap", "setState({ role: ROLES.ADMIN })", "w-full", "button", !isLoginEnabled)}
+                    ${Button("Login as Field Volunteer", "bg-sky-600 hover:bg-sky-700", "users", "setState({ role: ROLES.VOLUNTEER })", "w-full", "button", !isLoginEnabled)}
+                </div>
+
+                <div class="flex items-center my-6">
+                    <hr class="flex-grow border-gray-300 dark:border-slate-700" />
+                    <span class="px-3 text-sm font-medium text-slate-500 dark:text-slate-400">OR CITIZEN/VICTIM LOGIN</span>
+                    <hr class="flex-grow border-gray-300 dark:border-slate-700" />
+                </div>
+
+                <form id="citizen-login-form" data-form-type="citizenLogin" class="space-y-4 ${loginDisabledClass}">
+                    <input type="email" id="citizen-email" placeholder="Citizen Email (e.g., victim@drrms.org)" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-700 dark:text-white" required ${isLoginEnabled ? '' : 'disabled'} />
+                    <input type="password" id="citizen-password" placeholder="Password" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-700 dark:text-white" required ${isLoginEnabled ? '' : 'disabled'} />
+                    ${Button("Login as Citizen/Victim", COLORS.primary, "home", "", "w-full", "submit", !isLoginEnabled)}
+                    <p class="text-center text-sm text-slate-500 dark:text-slate-400 mt-4">
+                        <a href="#" class="text-blue-600 hover:underline">Forgot Password?</a> | <a href="#" class="text-blue-600 hover:underline">Sign Up</a>
+                    </p>
+                </form>
+            ` + academicInfo, 'w-full max-w-lg');
+        }
+
+        // 2. SIDEBAR NAVIGATION (REMAINS AS IS)
+        function renderSidebar() {
+            // Renamed 'Citizen' to 'Victim/Citizen' for clarity
+            const citizenRoleName = 'Citizen / Victim';
+            
+            const roleNav = {
+                [ROLES.ADMIN]: [
+                    { name: 'Dashboard', icon: 'home', page: 'dashboard' },
+                    { name: 'Live Map', icon: 'map', page: 'live_map' },
+                    { name: 'Resource Inventory', icon: 'package', page: 'resource_inventory' },
+                    { name: 'Relief Requests', icon: 'truck', page: 'relief_requests' },
+                    { name: 'Organization Donations', icon: 'heart-handshake', page: 'organization_donations' }, 
+                    { name: 'User Management', icon: 'users', page: 'user_management' },
+                    { name: 'Reports & Analytics', icon: 'clipboard-list', page: 'analytics_dashboard' }, 
+                    { name: 'System Settings', icon: 'settings', page: 'settings' },
+                ],
+                [ROLES.VOLUNTEER]: [
+                    { name: 'Dashboard', icon: 'home', page: 'dashboard' },
+                    { name: 'Assigned Requests', icon: 'clipboard-list', page: 'assigned_requests' },
+                    { name: 'Active Incidents', icon: 'alert-triangle', page: 'active_incidents' },
+                ],
+                [ROLES.CITIZEN]: [
+                    { name: 'Dashboard', icon: 'home', page: 'dashboard' },
+                    { name: 'Report Incident', icon: 'alert-triangle', page: 'report_incident' },
+                    { name: 'Request Relief', icon: 'package', page: 'request_relief' },
+                    { name: 'My Activity', icon: 'clipboard-list', page: 'my_activity' },
+                ]
+            };
+            
+            const navItems = (roleNav[state.role] || []).map(item => `
+                <a href="#" onclick="navigateTo('${item.page}')" title="${item.name}" class="flex items-center px-4 py-3 rounded-xl transition duration-150 space-x-3 ${state.currentPage === item.page ? 'bg-blue-600/10 text-blue-600 dark:bg-blue-800/30 dark:text-white font-bold' : 'text-slate-700 dark:text-gray-300 hover:bg-blue-50 dark:hover:bg-slate-800'} ${state.isSidebarOpen ? '' : 'md:justify-center md:px-2'}">
+                    <i data-lucide="${item.icon}" class="w-5 h-5 flex-shrink-0"></i>
+                    <span class="transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden'}">${item.name}</span>
+                </a>
+            `).join('');
+
+            const sidebarClass = state.isSidebarOpen ? 'w-64 translate-x-0' : 'w-0 -translate-x-full md:w-16';
+            const innerClass = state.isSidebarOpen ? 'w-64' : 'w-16';
+            
+            const roleDisplay = state.role === ROLES.CITIZEN ? citizenRoleName : state.role;
+
+            return `
+                <!-- Mobile Overlay Backdrop -->
+                <div id="mobile-overlay" class="fixed inset-0 z-40 bg-slate-900/50 backdrop-blur-sm md:hidden ${state.isSidebarOpen ? '' : 'hidden'}" onclick="toggleSidebar()"></div>
+
+                <!-- Sidebar Structure -->
+                <aside 
+                    class="fixed top-0 left-0 h-full z-50 sidebar-transition md:translate-x-0 md:h-screen md:sticky md:flex-shrink-0 bg-white dark:bg-slate-900 border-r border-gray-200 dark:border-slate-800 shadow-xl ${sidebarClass}"
+                >
+                    <div class="h-full flex flex-col p-4 sidebar-transition ${innerClass}">
+                        
+                        <!-- Header (Logo/Toggle) -->
+                        <div class="flex justify-between items-center h-16 mb-6">
+                            <div class="flex items-center overflow-hidden transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:opacity-100 md:justify-center'}">
+                                <i data-lucide="zap" class="w-8 h-8 text-blue-600 mr-2 flex-shrink-0"></i>
+                                <span class="text-2xl font-black text-slate-900 dark:text-white tracking-tight ${state.isSidebarOpen ? '' : 'md:hidden'}">DRRMS</span>
+                            </div>
+                            <button onclick="toggleSidebar()" class="text-slate-600 dark:text-gray-300 p-2 rounded-full hover:bg-gray-200 dark:hover:bg-slate-700 ${state.isSidebarOpen ? '' : 'hidden'} md:hidden">
+                                <i data-lucide="x" class="w-6 h-6"></i>
+                            </button>
+                        </div>
+
+                        <!-- Navigation Menu -->
+                        <nav class="flex-grow space-y-2">
+                            ${navItems}
+                        </nav>
+
+                        <!-- Footer / Role Info -->
+                        <div class="mt-8 border-t border-gray-200 dark:border-slate-800 pt-4 text-sm">
+                            <p class="font-medium transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden'}">
+                                ${roleDisplay} Access
+                            </p>
+                            <p class="text-xs text-slate-500 dark:text-slate-400 transition-opacity duration-300 ${state.isSidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden'}">
+                                User ID: ${currentUserId ? currentUserId.substring(0, 8) : 'N/A'}
+                            </p>
+                        </div>
+                    </div>
+                </aside>
+            `;
+        }
+
+        // 3. HEADER (REMAINS AS IS)
+        function renderHeader() {
+            const roleName = { ADMIN: 'Administrator', VOLUNTEER: 'Volunteer', CITIZEN: 'Citizen/Victim' }[state.role];
+            const isDark = document.documentElement.classList.contains('dark');
+            const toggleClass = isDark ? 'dark' : '';
+            const themeLabel = isDark ? 'Dark' : 'Light';
+
+
+            return `
+                <header class="sticky top-0 z-30 shadow-md bg-white/90 dark:bg-slate-900/90 backdrop-blur-md sidebar-transition">
+                    <div class="flex justify-between items-center h-16 px-4 sm:px-6 lg:px-8">
+                        
+                        <!-- Mobile Logo and Sidebar Toggle -->
+                        <div class="flex items-center space-x-3 md:hidden">
+                            ${IconButton(state.isSidebarOpen ? 'x' : 'menu', 'toggleSidebar()', 'md:p-3')}
+                            <span class="text-xl font-black text-slate-900 dark:text-white tracking-tight">DRRMS</span>
+                        </div>
+
+                        <!-- Desktop Sidebar Toggle -->
+                        <div class="hidden md:block">
+                            ${IconButton(state.isSidebarOpen ? 'chevron-left' : 'menu', 'toggleSidebar()', 'p-3 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700/50')}
+                        </div>
+                        
+                        <!-- User Info & Actions (Right side) -->
+                        <div class="flex items-center space-x-4">
+                            <span class="hidden sm:inline text-sm font-medium text-slate-700 dark:text-gray-300 mr-2">${roleName}</span>
+                            
+                            <!-- NEW SLIDER TOGGLE -->
+                            <div class="flex items-center space-x-2">
+                                <span id="theme-label" class="text-sm font-medium text-slate-700 dark:text-gray-300 select-none">${themeLabel}</span>
+                                <div id="themeToggle" onclick="toggleDarkMode()" class="theme-toggle ${toggleClass}">
+                                    <div class="toggle-circle"></div>
+                                </div>
+                            </div>
+                            
+                            ${IconButton('log-out', 'handleLogout()', 'text-red-500 hover:bg-red-100 dark:hover:bg-slate-700/50')}
+                        </div>
+                    </div>
+                </header>
+            `;
+        }
+
+        // 4. MAIN CONTENT ROUTER (REMAINS AS IS)
+        function renderMainContent() {
+            const contentMap = {
+                // Admin Pages
+                'dashboard': renderAdminDashboard,
+                'live_map': renderLiveMap,
+                'resource_inventory': renderResourceInventory,
+                'relief_requests': renderAdminReliefRequests, 
+                'organization_donations': renderOrganizationDonations, // NEW
+                'user_management': renderUserManagement,
+                'analytics_dashboard': renderAnalyticsDashboard, 
+                'reports': renderReportsPage, 
+                'settings': renderSystemSettings,
+
+                // Volunteer Pages
+                'assigned_requests': renderVolunteerAssignedRequests, 
+                'active_incidents': renderVolunteerIncidents,
+
+                // Citizen Pages
+                'report_incident': renderCitizenReportPage,
+                'request_relief': renderCitizenReliefRequestPage,
+                'my_activity': renderCitizenMyActivity,
+            };
+
+            const renderer = contentMap[state.currentPage] || (() => `<p class="text-center p-8 dark:text-white">Page Not Found</p>`);
+            
+            // FIX: Adjust margin based on sidebar state for desktop (md:)
+            const mainContentClass = state.isSidebarOpen ? 'md:ml-64' : 'md:ml-16';
+
+            return `
+                <div class="flex-1 flex flex-col min-h-screen sidebar-transition ${mainContentClass}">
+                    ${renderHeader()}
+                    <main class="flex-1">
+                        ${renderer()}
+                    </main>
+                    <footer class="w-full text-center text-xs p-4 border-t border-gray-200 dark:border-slate-800 dark:text-slate-500">
+                        DRRMS | Disaster Resource & Relief Management System | 2025. Accessible & Performant.
+                    </footer>
+                </div>
+            `;
+        }
+        
+        // --- Dashboard and Page Implementations (HTML Templates) ---
+
+        // ADMIN PAGES
+        function renderAdminDashboard() {
+            const totalIncidents = state.incidents.length;
+            const newIncidents = state.incidents.filter(i => i.status === 'New').length;
+            const openRequests = state.requests.filter(q => q.status === 'New' || q.status === 'Approved' || q.status === 'Assigned' || q.status === 'En route').length;
+            const criticalResources = state.resources.filter(r => r.available < 500).length;
+            
+            const incidentItems = state.incidents.filter(i => i.status !== 'Resolved').map(incident => {
+                const summaryHtml = incident.aiSummary ? `<p class="text-sm text-blue-400 mt-2 p-2 bg-blue-900/30 rounded-lg shadow-inner">AI Summary: ${incident.aiSummary}</p>` : '';
+                
+                return `
+                <div class="flex flex-col p-3 rounded-lg border dark:border-slate-700 card-bg">
+                    <div class="flex justify-between items-start">
+                        <div class="flex items-center space-x-3">
+                            <i data-lucide="alert-triangle" class="w-5 h-5 ${getStatusColor(incident.status).replace('bg', 'text')}"></i>
+                            <div>
+                                <p class="font-semibold">${incident.type} - ${incident.location}</p>
+                                <p class="text-xs text-slate-500 dark:text-gray-400">${incident.description.substring(0, 50)}...</p>
+                            </div>
+                        </div>
+                        <div class="flex space-x-2 items-center">
+                            ${Button(incident.aiSummary ? 'Summary Ready ✨' : 'Summarize ✨', 'bg-purple-600 hover:bg-purple-700', 'cpu', `summarizeIncident('${incident.id}')`, 'text-xs py-1 px-2', 'button', !!incident.aiSummary)}
+                            ${StatusPill(incident.status)}
+                            ${Button(incident.status === 'New' ? 'Review' : 'Resolve', COLORS.primary, '', `updateIncidentStatus('${incident.id}', '${incident.status === 'New' ? 'Under-Review' : 'Resolved'}')`) }
+                        </div>
+                    </div>
+                    <div id="summary-output-${incident.id}"></div>
+                    ${summaryHtml}
+                </div>
+                `}).join('');
+
+            // --- PROFESSIONAL FEATURE: LOW RESOURCE ALERT ---
+            const lowResourceAlert = criticalResources > 0 ? `
+                <div class="p-4 bg-red-100 dark:bg-red-900/50 border-l-4 border-red-500 rounded-xl mb-6 flex items-center space-x-3 shadow-lg">
+                    <i data-lucide="alert-triangle" class="w-6 h-6 text-red-500 flex-shrink-0"></i>
+                    <p class="text-sm text-red-700 dark:text-red-300 font-medium">
+                        URGENT: ${criticalResources} resource type(s) are critically low (below 500 units). Check the <a href="#" onclick="navigateTo('resource_inventory')" class="underline">Resource Inventory</a> now.
+                    </p>
+                </div>
+            ` : '';
+
+            // FIX: Removed the problematic mini-map card and replaced it with a direct link card.
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-8">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Admin Overview</h1>
+                    
+                    ${lowResourceAlert}
+
+                    <!-- Key Metrics Cards -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                        ${Card("Total Incidents", `<p class="text-4xl font-extrabold text-blue-600">${totalIncidents}</p>`, "border-t-4 border-blue-600")}
+                        ${Card("Urgent New Incidents", `<p class="text-4xl font-extrabold text-red-500">${newIncidents}</p>`, "border-t-4 border-red-500")}
+                        ${Card("Open Relief Requests", `<p class="text-4xl font-extrabold text-amber-500">${openRequests}</p>`, "border-t-4 border-amber-500")}
+                        ${Card("Low Resources Stock", `<p class="text-4xl font-extrabold text-green-500">${criticalResources}</p>`, "border-t-4 border-green-500")}
+                    </div>
+                    
+                    <!-- Quick Links/Tools -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        ${Card("View Live Operations Map", `
+                            <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">View real-time visualization of all active incidents and resource hubs.</p>
+                            ${Button("Go to Live Map", 'bg-sky-600 hover:bg-sky-700', 'map', "navigateTo('live_map')")}
+                        `)}
+                        ${Card("Analyze Data", `
+                            <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Deep dive into incident response, resource utilization, and team performance metrics.</p>
+                            ${Button("Go to Analytics Dashboard", COLORS.primary, 'trending-up', "navigateTo('analytics_dashboard')")}
+                        `)}
+                    </div>
+                </div>
+            `;
+        }
+        
+        // --- NEW: ANALYTICS DASHBOARD IMPLEMENTATION (Chart.js) ---
+        function renderAnalyticsDashboard() {
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Strategic Analytics Dashboard</h1>
+                    <p class="text-slate-600 dark:text-gray-400">Deep-dive analysis of incident response, resource utilization, and team performance.</p>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        ${Card("Incident Status Breakdown (Bar Chart)", `
+                            <div class="w-full h-64"><canvas id="chart-status"></canvas></div>
+                        `, "lg:col-span-1")}
+
+                        ${Card("Volunteer Workload (Doughnut Chart)", `
+                            <div class="w-full h-64"><canvas id="chart-vol-work"></canvas></div>
+                        `, "lg:col-span-1")}
+                        
+                        ${Card("Average Resolution Time (Simulated)", `
+                            <div class="flex flex-col items-center justify-center h-64">
+                                <span class="text-6xl font-extrabold text-green-500">4.2</span>
+                            <span class="text-lg dark:text-gray-300 mt-2">Hours</span>
+                        </div>
+                        `, "lg:col-span-1")}
+                    </div>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        ${Card("Resource Distribution Report", `
+                            <p class="text-sm dark:text-gray-300 mb-4">View total available vs dispatched resources.</p>
+                            <div class="h-48 flex items-center justify-center bg-gray-100 dark:bg-slate-700 rounded-lg">
+                                [Placeholder: Resource vs. Dispatch Simulation]
+                            </div>
+                        `, "lg:col-span-2")}
+                        
+                        ${Card("Report Generation & Export", `
+                            <p class="text-sm dark:text-gray-300 mb-4">Generate comprehensive historical reports for regulatory compliance and audit purposes.</p>
+                            <div class="space-y-3 pt-4">
+                                ${Button("Generate Quarterly Report", "bg-slate-600 hover:bg-slate-700", "file-text", "console.log('Generating Quarterly Report')")}
+                                ${Button("Export Raw Data (CSV)", "bg-slate-600 hover:bg-slate-700", "download", "console.log('Exporting CSV')")}
+                            </div>
+                        `, "lg:col-span-1")}
+                    </div>
+                </div>
+            `;
+        }
+
+        // NEW: ADMIN RELIEF REQUESTS REVIEW PAGE (REMAINS AS IS)
+        function renderAdminReliefRequests() {
+            const volunteers = state.users.filter(u => u.role === ROLES.VOLUNTEER);
+            const resourceOptions = state.resources.map(r => `<option value="${r.type}">${r.type}</option>`).join('');
+            
+            const requestItems = state.requests.map(req => {
+                const isNew = req.status === 'New';
+                const isApproved = req.status === 'Approved' || req.status === 'Assigned' || req.status === 'En route';
+                const assignedVolunteer = req.assignedTo ? volunteers.find(v => v.id === req.assignedTo)?.name || 'Unknown' : 'Unassigned';
+                
+                const draftButton = isApproved && !req.aiDraft ? Button("Draft Assignment Message ✨", 'bg-purple-600 hover:bg-purple-700', 'send', `draftAssignmentMessage('${req.id}')`, 'text-xs py-1 px-2', 'button') : '';
+                const draftOutput = req.aiDraft ? `<div class="p-3 mt-2 text-sm bg-blue-900/20 rounded-lg shadow-inner"><p class="font-medium text-blue-400">AI Draft Message:</p> ${req.aiDraft}</div>` : `<div id="draft-output-${req.id}"></div>`;
+
+
+                return `
+                    <div class="p-4 border rounded-xl dark:border-slate-700 card-bg space-y-3">
+                        <div class="flex justify-between items-start">
+                            <div class="space-y-1">
+                                <p class="font-bold text-lg">${req.resourceType} (x${req.quantity})</p>
+                                <p class="text-sm text-slate-600 dark:text-gray-400">Location: ${req.location} | Urgency: ${req.urgency}</p>
+                            </div>
+                            ${StatusPill(req.status)}
+                        </div>
+                        
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between pt-2 border-t dark:border-slate-800">
+                            <p class="text-sm text-slate-600 dark:text-gray-300 mb-2 sm:mb-0">
+                                Assigned: <strong>${assignedVolunteer}</strong>
+                            </p>
+                            
+                            <div class="flex space-x-2 flex-wrap">
+                                ${draftButton}
+                                ${isNew ? Button("Approve", COLORS.success, 'check', `updateRequestReview('${req.id}', 'Approved')`, 'text-xs') : ''}
+                                ${isNew ? Button("Decline", COLORS.alert, 'x', `updateRequestReview('${req.id}', 'Declined')`, 'text-xs') : ''}
+                                
+                                ${isApproved && !req.assignedTo ? `
+                                    <form id="assign-volunteer-form-${req.id}" data-form-type="assignVolunteerModal" data-request-id="${req.id}" class="flex space-x-1">
+                                        <select name="volunteerId" class="p-1 border dark:border-slate-600 rounded-lg text-sm dark:bg-slate-800 dark:text-white" required>
+                                            <option value="">Assign...</option>
+                                            ${volunteers.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}
+                                        </select>
+                                        ${Button("Assign", COLORS.primary, 'user-check', '', 'text-xs', 'submit')}
+                                    </form>
+                                ` : ''}
+                                ${req.assignedTo ? StatusPill(req.status) : ''}
+                            </div>
+                        </div>
+                        ${draftOutput}
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Relief Requests Review</h1>
+                    ${Card("Open Requests & Allocation", `
+                        <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Review requests before assigning resources to volunteers.</p>
+                        <div class="space-y-4">
+                            ${requestItems.length > 0 ? requestItems : '<p class="text-slate-500 dark:text-gray-400">No new or open requests needing review.</p>'}
+                        </div>
+                    `)}
+                </div>
+            `;
+        }
+
+        // NEW: ORGANIZATION DONATIONS PAGE (REMAINS AS IS)
+        function renderOrganizationDonations() {
+            const resourceOptions = state.resources.map(r => `<option value="${r.type}">${r.type}</option>`).join('');
+            
+            const donationRows = state.donations.map(d => `
+                <tr class="hover:bg-gray-50 dark:hover:bg-slate-800">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-purple-600 dark:text-purple-400">${d.organization}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${d.resourceType}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600">${d.quantity}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${new Date(d.date).toLocaleDateString()}</td>
+                </tr>
+            `).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Organization Donation Management (Donor)</h1>
+
+                    ${Card("Log New Large-Scale Donation", `
+                        <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Use this form to log bulk donations. Inventory will be updated automatically.</p>
+                        <form id="log-donation-form" data-form-type="logDonation" class="space-y-4">
+                            <input type="text" name="organization" placeholder="Donating Organization (e.g., Red Cross)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            <select name="resourceType" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required>
+                                <option value="">Select Resource Type</option>
+                                ${resourceOptions}
+                            </select>
+                            <input type="number" name="quantity" min="1" placeholder="Quantity Donated" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            ${Button("Log Donation & Update Inventory", "bg-purple-600 hover:bg-purple-700", "hand-heart", "", "w-full", "submit")}
+                        </form>
+                    `)}
+                    
+                    ${Card("Donation History", `
+                           <div class="overflow-x-auto">
+                                <table class="min-w-full divide-y divide-gray-200 dark:divide-slate-700">
+                                    <thead class="bg-gray-50 dark:bg-slate-700">
+                                        <tr>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Organization</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Resource</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Quantity</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Date</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-200 dark:divide-slate-700">
+                                        ${donationRows.length > 0 ? donationRows : '<tr><td colspan="4" class="px-6 py-4 text-center text-slate-500">No donations logged yet.</td></tr>'}
+                                    </tbody>
+                                </table>
+                            </div>
+                    `)}
+                </div>
+            `;
+        }
+
+
+        function renderResourceInventory() {
+            // See function below for modal logic handlers
+            
+            const resourceRows = state.resources.map(r => `
+                <tr class="hover:bg-gray-50 dark:hover:bg-slate-800">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-slate-900 dark:text-white">${r.type}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${r.available} ${r.unit}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${r.dispatched} ${r.unit}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">${r.location}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        ${Button("Update Stock", COLORS.primary, '', `showUpdateStockModal('${r.id}')`, 'text-xs py-1 px-2')}
+                    </td>
+                </tr>
+            `).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Resource Inventory Management</h1>
+                    ${Button("Add New Resource Type", COLORS.primary, 'package', 'showAddResourceModal()')}
+
+                    ${Card("Resource Stock Overview", `
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full divide-y divide-gray-200 dark:divide-slate-700">
+                                <thead class="bg-gray-50 dark:bg-slate-700">
+                                    <tr>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Resource Type</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Available Stock</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Dispatched</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Location</th>
+                                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-200 dark:divide-slate-700">
+                                    ${resourceRows}
+                                </tbody>
+                            </table>
+                        </div>
+                    `)}
+                </div>
+            `;
+        }
+        
+        function renderUserManagement() {
+            const sortedUsers = state.users.slice().sort((a, b) => a.role.localeCompare(b.role));
+            const userList = sortedUsers.map(user => `
+                <li class="flex justify-between items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700/50 transition">
+                    <div>
+                        <p class="font-semibold text-sm">${user.name}</p>
+                        <p class="text-xs text-slate-500 dark:text-gray-400">${user.email}</p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        ${StatusPill(user.role)}
+                        ${IconButton('settings', `console.log('Edit user ${user.id}')`, 'text-sm')}
+                    </div>
+                </li>
+            `).join('');
+            
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">User and Role Management</h1>
+                    ${Button("Add New System User", COLORS.primary, 'users', 'showAddUserModal()')}
+
+                    ${Card("System User List", `<ul class="mt-4 space-y-3 divide-y divide-gray-200 dark:divide-slate-700">${userList}</ul>`)}
+                </div>
+            `;
+        }
+        
+        // Old Reports Page is now Analytics Dashboard
+        function renderReportsPage() {
+             return `
+                <div class="p-4 sm:p-6 lg:px-8">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Reports & Analytics (Legacy)</h1>
+                    ${Card("Operational Performance Report", `
+                        <p class="dark:text-gray-300">This page is reserved for static report generation. Please use the <a href="#" onclick="navigateTo('analytics_dashboard')" class="underline text-blue-500">Analytics Dashboard</a> for interactive charts.</p>
+                        
+                        <div class="flex space-x-4 mt-4">
+                            ${Button("Export Audit Report", "bg-slate-600 hover:bg-slate-700", "clipboard-list", "console.log('Export Audit Report')")}
+                        </div>
+                    `, "mt-6 space-y-4")}
+                </div>
+            `;
+        }
+
+        function renderLiveMap() {
+            // Check if map is initialized and update markers when the component renders
+            if (map) {
+                updateMapMarkers();
+                map.invalidateSize(); // Crucial for Leaflet when visibility changes
+            }
+
+            return `
+                <div class="p-4 sm:p-6 lg:px-8">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Live Operations Map</h1>
+                    ${Card("Real-time Incident & Resource Visualization", `
+                        <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-slate-700">
+                            <p class="text-sm dark:text-gray-400">Map shows ${state.incidents.filter(i => i.status !== 'Resolved').length} active incidents.</p>
+                            <div class="flex space-x-2">
+                                <span class="flex items-center text-xs dark:text-gray-400"><span class="w-3 h-3 bg-red-500 rounded-full mr-1"></span> Critical</span>
+                                <span class="flex items-center text-xs dark:text-gray-400"><span class="w-3 h-3 bg-amber-500 rounded-full mr-1"></span> In-Progress</span>
+                            </div>
+                        </div>
+                        <div id="map" class="w-full"></div>
+                    `, "mt-6 h-[70vh] flex flex-col")}
+                </div>
+            `;
+        }
+
+        function renderSystemSettings() {
+            const currentSettings = state.systemSettings;
+            
+            // This is complex. We'll rely on an event listener attached after render for form submission.
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">System Settings</h1>
+                    ${Card("Operational Configuration", `
+                        <form id="settings-form" data-form-type="settings" class="space-y-6">
+                            <div>
+                                <label class="block text-sm font-medium dark:text-gray-300">High-Priority Incident Threshold</label>
+                                <input type="number" min="1" name="incidentThreshold" value="${currentSettings.incidentThreshold}" class="w-full mt-1 p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" />
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Number of "New" incidents required to trigger a major system alert.</p>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium dark:text-gray-300">Authorized Volunteer Email Domain</label>
+                                <input type="text" name="notificationEmailDomain" value="${currentSettings.notificationEmailDomain}" class="w-full mt-1 p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" />
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Only users with this domain can use Google OAuth for Admin/Volunteer roles.</p>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium dark:text-gray-300">Default Request Assignment Mode</label>
+                                <select name="defaultVolunteerAssignment" class="w-full mt-1 p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white">
+                                    <option value="Auto-Assign" ${currentSettings.defaultVolunteerAssignment === 'Auto-Assign' ? 'selected' : ''}>Auto-Assign (Algorithm based)</option>
+                                    <option value="Manual" ${currentSettings.defaultVolunteerAssignment === 'Manual' ? 'selected' : ''}>Manual (Admin must approve and assign)</option>
+                                </select>
+                            </div>
+
+                            ${Button("Save System Settings", COLORS.primary, "settings", "", "w-full", "submit")}
+                        </form>
+                    `)}
+                </div>
+            `;
+        }
+
+        // VOLUNTEER PAGES (REMAINS AS IS)
+
+        // NEW: Function for Volunteer Assigned Requests
+        function renderVolunteerAssignedRequests() {
+            const assignedRequests = state.requests.filter(q => q.assignedTo === currentUserId && q.status !== 'Delivered' && q.status !== 'Declined');
+            const requestItems = assignedRequests.map(req => {
+                const isEnRoute = req.status === 'en route';
+                
+                return `
+                    <div class="p-4 border rounded-xl dark:border-slate-700 card-bg space-y-3">
+                        <div class="flex justify-between items-start">
+                            <div class="space-y-1">
+                                <p class="font-bold text-lg">${req.resourceType} (x${req.quantity})</p>
+                                <p class="text-sm text-slate-600 dark:text-gray-400">Delivery Location: <strong>${req.location}</strong></p>
+                            </div>
+                            ${StatusPill(req.status)}
+                        </div>
+                        
+                        <div class="flex space-x-2 pt-2 border-t dark:border-slate-800">
+                            ${Button("Mark En Route", COLORS.warning, 'route', `updateRequestStatus('${req.id}', 'en route')`, 'text-xs', 'button', isEnRoute)}
+                            ${Button("Mark Delivered", COLORS.success, 'check-circle', `updateRequestStatus('${req.id}', 'Delivered')`, 'text-xs', 'button', isEnRoute ? false : true)}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">My Assigned Deliveries</h1>
+                    ${Card("Tasks Awaiting Fulfillment (Volunteer ${state.currentUser?.name || 'V-User'})", `
+                        <p class="text-sm text-slate-500 dark:text-gray-400 mb-4">Complete these tasks in the field, updating the status as you progress.</p>
+                        <div class="space-y-4">
+                            ${requestItems.length > 0 ? requestItems : '<p class="text-slate-500 dark:text-gray-400">No active delivery requests currently assigned.</p>'}
+                        </div>
+                    `)}
+                </div>
+            `;
+        }
+        
+        function renderVolunteerDashboard() {
+            // FIX: Removed redundant H1 from included page renders
+            const assignedRequestsContent = renderVolunteerAssignedRequests();
+            const activeIncidentsContent = renderVolunteerIncidents();
+            
+            // Function to extract content from a page render (everything inside the main content wrapper)
+            const extractCardContent = (html) => {
+                const match = html.match(/<div class="p-4[^>]*>([\s\S]*)<\/div>\s*$/);
+                return match ? match[1].replace(/<h1[^>]*>.*?<\/h1>|/g, '') : 'No content available.';
+            };
+            
+            const assignedRequestsCardContent = extractCardContent(assignedRequestsContent);
+            const activeIncidentsCardContent = extractCardContent(activeIncidentsContent);
+
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-8">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Volunteer Field Dashboard</h1>
+                    
+                    ${Card("Assigned Delivery Tasks (Immediate Focus)", `
+                        ${assignedRequestsCardContent}
+                    `, "space-y-4")}
+
+                    ${Card("Active Incidents in My Area (For Awareness)", `
+                        ${activeIncidentsCardContent}
+                    `, "space-y-4")}
+                </div>
+            `;
+        }
+
+
+        function renderVolunteerIncidents() {
+            const activeIncidents = state.incidents.filter(i => i.status === 'New' || i.status === 'Under-Review');
+            const incidentItems = activeIncidents.map(incident => {
+                const summaryHtml = incident.aiSummary ? `<p class="text-sm text-blue-400 mt-2 p-2 bg-blue-900/30 rounded-lg shadow-inner">AI Summary: ${incident.aiSummary}</p>` : '';
+                
+                return `
+                <div class="flex flex-col p-3 border rounded-xl dark:border-slate-700 hover:shadow-md transition card-bg">
+                    <div class="flex justify-between items-start">
+                        <div class="flex items-center space-x-3">
+                            <i data-lucide="alert-triangle" class="w-5 h-5 ${getStatusColor(incident.status).replace('bg', 'text')}"></i>
+                            <div>
+                                <p class="font-semibold text-sm">${incident.type} - ${incident.location}</p>
+                                <p class="text-xs text-slate-500 dark:text-gray-400 mt-1">${incident.description.substring(0, 50)}...</p>
+                            </div>
+                        </div>
+                        <div class="flex space-x-2 items-center">
+                            ${Button(incident.aiSummary ? 'Summary Ready ✨' : 'Summarize ✨', 'bg-purple-600 hover:bg-purple-700', 'cpu', `summarizeIncident('${incident.id}')`, 'text-xs py-1 px-2', 'button', !!incident.aiSummary)}
+                            ${StatusPill(incident.status)}
+                        </div>
+                    </div>
+                    <div id="summary-output-${incident.id}"></div>
+                    ${summaryHtml}
+                </div>
+                `}).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:px-8">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Active Incidents</h1>
+                    ${Card("Current Situational Awareness", `
+                        ${activeIncidents.length === 0 
+                            ? '<p class="text-slate-500 dark:text-gray-400">No new or under-review incidents currently reported.</p>'
+                            : incidentItems
+                        }
+                    `, "mt-6 space-y-4")}
+                </div>
+            `;
+        }
+
+        // CITIZEN PAGES (REMAINS AS IS)
+        function renderCitizenReportPage() {
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 max-w-lg mx-auto">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white mb-6">Report New Emergency Incident</h1>
+                    ${Card("Disaster Report Form", `
+                        <form id="incident-report-form" data-form-type="incidentReport" class="space-y-4">
+                            <select name="type" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required>
+                                <option value="">Select Incident Type</option>
+                                <option value="Flood">Flood</option>
+                                <option value="Earthquake Damage">Earthquake Damage</option>
+                                <option value="Wildfire">Wildfire</option>
+                                <option value="Medical Emergency">Medical Emergency</option>
+                                <option value="Structural Failure">Structural Failure</option>
+                            </select>
+                            <select name="severity" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white">
+                                <option value="Critical">Critical</option>
+                                <option value="High">High</option>
+                                <option value="Medium" selected>Medium</option>
+                            </select>
+                            <input type="text" name="location" placeholder="Specific Location/Address (e.g., 123 Main St)" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            <textarea name="description" placeholder="Detailed Description of the incident..." rows="3" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl focus:ring-blue-500 dark:bg-slate-700 dark:text-white" required></textarea>
+                            
+                            <div class="p-3 bg-gray-100 dark:bg-slate-700/50 rounded-xl text-sm text-slate-600 dark:text-gray-400">
+                                Photo/Video Upload (Simulated Placeholder)
+                            </div>
+                            ${Button("Submit Report", COLORS.alert, "alert-triangle", "", "w-full", "submit")}
+                        </form>
+                    `)}
+                </div>
+            `;
+        }
+
+        function renderCitizenReliefRequestPage() {
+            const resourceOptions = state.resources.map(r => `<option value="${r.type}">${r.type}</option>`).join('');
+            
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 max-w-lg mx-auto">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white mb-6">Request Emergency Relief</h1>
+                    ${Card("Request Form", `
+                        <form id="relief-request-form" data-form-type="reliefRequest" class="space-y-4">
+                            <select name="resourceType" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required>
+                                <option value="">Select Resource Needed</option>
+                                ${resourceOptions}
+                            </select>
+                            <input type="number" name="quantity" placeholder="Quantity Needed" min="1" value="1" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            <select name="urgency" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white">
+                                <option value="Urgent">Urgent (Immediate Danger)</option>
+                                <option value="High">High (Next 24 Hours)</option>
+                                <option value="Medium" selected>Medium (General Need)</option>
+                            </select>
+                            <input type="text" name="location" placeholder="Current Location/Delivery Address" class="w-full p-3 border border-gray-300 dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                            ${Button("Submit Relief Request", COLORS.primary, "truck", "", "w-full", "submit")}
+                        </form>
+                    `)}
+                </div>
+            `;
+        }
+        
+        function renderCitizenMyActivity() {
+            const myIncidents = state.incidents.filter(i => i.reporterId === currentUserId);
+            const myRequests = state.requests.filter(q => q.reporterId === currentUserId);
+            
+            const incidentItems = myIncidents.length === 0 ? 
+                `<p class="text-slate-500 dark:text-gray-400">You have no submitted reports.</p>` :
+                myIncidents.map(i => `
+                    <div class="p-3 border rounded-xl dark:border-slate-700 flex justify-between items-center card-bg">
+                        <div class="flex-1">
+                        <p class="font-medium text-sm">${i.type} at ${i.location}</p>
+                        <p class="text-xs text-slate-500 dark:text-gray-400">Severity: ${i.severity} | Reported: ${new Date(i.timestamp).toLocaleString()}</p>
+                        </div>
+                        ${StatusPill(i.status)}
+                    </div>
+                `).join('');
+
+            const requestItems = myRequests.length === 0 ? 
+                `<p class="text-slate-500 dark:text-gray-400">You have no active relief requests.</p>` :
+                myRequests.map(q => `
+                    <div class="p-3 border rounded-xl dark:border-slate-700 flex justify-between items-center card-bg">
+                        <div class="flex-1">
+                        <p class="font-medium text-sm">${q.resourceType} (x${q.quantity})</p>
+                        <p class="text-xs text-slate-500 dark:text-gray-400">Urgency: ${q.urgency} | Assigned: ${q.assignedTo ? 'Yes' : 'No'}</p>
+                        </div>
+                        ${StatusPill(q.status)}
+                    </div>
+                `).join('');
+
+            return `
+                <div class="p-4 sm:p-6 lg:px-8 space-y-6">
+                    <h1 class="text-3xl font-bold text-slate-900 dark:text-white">My Activity & Status</h1>
+                    ${Card("My Submitted Incident Reports", `<div class="space-y-3">${incidentItems}</div>`)}
+                    ${Card("My Resource Requests Status", `<div class="space-y-3">${requestItems}</div>`)}
+                </div>
+            `;
+        }
+
+        // --- Event Listener Handlers (REMAINS AS IS) ---
+
+        function handleSettingsSubmit(event) {
+            // event.preventDefault() is handled by delegation system
+            const form = event.target;
+            const newSettings = {
+                incidentThreshold: parseInt(form.incidentThreshold.value),
+                notificationEmailDomain: form.notificationEmailDomain.value,
+                defaultVolunteerAssignment: form.defaultVolunteerAssignment.value,
+                mapDefaultZoom: state.systemSettings.mapDefaultZoom, 
+            };
+            updateSystemSettings(newSettings);
+            navigateTo('dashboard');
+        }
+
+        async function handleIncidentSubmit(event) {
+            // event.preventDefault() is handled by delegation system
+            const form = event.target;
+            
+            const newIncident = {
+                type: form.type.value,
+                severity: form.severity.value,
+                description: form.description.value,
+                location: form.location.value
+            };
+
+            if (!newIncident.type || !newIncident.location || !newIncident.description) {
+                console.error("Incident submission failed: Required fields are missing.");
+                return;
+            }
+
+            const incidentData = {
+                ...newIncident,
+                status: 'New',
+                reporterId: currentUserId || 'C-Anon', 
+                timestamp: Date.now(),
+            };
+            
+            if (db) {
+                await addDoc(collection(db, PATHS.incidents), incidentData);
+            }
+            
+            navigateTo('dashboard');
+            console.log(`Incident Reported: ${newIncident.type} at ${newIncident.location}`);
+        }
+
+        async function handleReliefRequestSubmit(event) {
+            // event.preventDefault() is handled by delegation system
+            const form = event.target;
+            const newRequest = {
+                resourceType: form.resourceType.value,
+                quantity: parseInt(form.quantity.value),
+                urgency: form.urgency.value,
+                location: form.location.value
+            };
+
+            const requestData = {
+                ...newRequest,
+                status: 'New',
+                assignedTo: null, 
+                reporterId: currentUserId || 'C-Anon', 
+                timestamp: Date.now(),
+            };
+
+            if (db) {
+                await addDoc(collection(db, PATHS.requests), requestData);
+            }
+            
+            navigateTo('dashboard');
+            console.log(`Relief Request Submitted: ${newRequest.resourceType} x ${newRequest.quantity}`);
+        }
+
+        async function handleLogDonationSubmit(event) {
+            // event.preventDefault() is handled by delegation system
+            const form = event.target;
+            const formData = {
+                organization: form.organization.value,
+                resourceType: form.resourceType.value,
+                quantity: form.quantity.value,
+            };
+            
+            if (!formData.organization || !formData.resourceType || !formData.quantity) {
+                console.error("Donation submission failed: Required fields are missing.");
+                return;
+            }
+
+            await logOrganizationDonation(formData);
+            navigateTo('resource_inventory'); // Go to inventory to see the stock update
+            console.log(`Donation Logged: ${formData.organization} donated ${formData.quantity} of ${formData.resourceType}`);
+        }
+
+        // --- Modal & Form Handlers (REMAINS AS IS) ---
+
+        function showModal(title, content) {
+            const modalHtml = `
+                <div id="active-modal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm transition-opacity duration-300">
+                    <div class="w-full max-w-md">
+                        ${Card(title, `
+                            <div class="flex justify-end -mt-10 mb-4">
+                                ${IconButton('x', 'closeModal()', 'text-slate-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700')}
+                            </div>
+                            ${content}
+                        `)}
+                    </div>
+                </div>
+            `;
+            document.getElementById('modals-root').innerHTML = modalHtml;
+        }
+
+        function closeModal() {
+            document.getElementById('modals-root').innerHTML = '';
+            renderApp(); 
+        }
+
+        function showAddResourceModal() {
+            const content = `
+                <form id="add-resource-form" data-form-type="addResourceModal" class="space-y-4">
+                    <input type="text" name="type" placeholder="Resource Name (e.g., Blankets)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                    <input type="number" name="available" min="0" placeholder="Initial Available Stock" value="0" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                    <input type="text" name="unit" placeholder="Unit (e.g., units, liters)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                    <input type="text" name="location" placeholder="Storage Location (e.g., Depot C)" value="Warehouse A" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                    ${Button("Create Resource Type", COLORS.primary, "package", "", "w-full", "submit")}
+                </form>
+            `;
+            showModal("Add New Resource Type", content);
+        }
+        
+        function showUpdateStockModal(resourceId) {
+            const resource = state.resources.find(r => r.id === resourceId);
+            const content = `
+                <form id="update-stock-form" data-form-type="updateStockModal" data-resource-id="${resourceId}" class="space-y-4">
+                    <div class="space-y-4">
+                        <div class="flex space-x-4 mb-4">
+                            <label class="flex items-center space-x-2">
+                                <input type="radio" name="stockType" value="increase" checked />
+                                <span>Increase Stock</span>
+                            </label>
+                            <label class="flex items-center space-x-2">
+                                <input type="radio" name="stockType" value="decrease" />
+                                <span>Decrease Stock</span>
+                            </label>
+                        </div>
+                        <input type="number" name="change" min="1" placeholder="Quantity to change" value="0" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        <p class="text-sm text-slate-500 dark:text-slate-400">Current Available: <strong>${resource.available} ${resource.unit}</strong></p>
+                        ${Button("Apply Stock Change", COLORS.primary, "package", "", "w-full", "submit")}
+                    </div>
+                </form>
+            `;
+            showModal(`Update Stock: ${resource.type}`, content);
+        }
+
+        function showAddUserModal() {
+            const content = `
+                <form id="add-user-form" data-form-type="addUserModal" class="space-y-4">
+                    <div class="space-y-4">
+                        <input type="text" name="name" placeholder="User Full Name" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        <input type="email" name="email" placeholder="User Email (Google OAuth)" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white" required />
+                        <select name="role" class="w-full p-3 border dark:border-slate-700 rounded-xl dark:bg-slate-700 dark:text-white">
+                            <option value="${ROLES.VOLUNTEER}">Volunteer</option>
+                            <option value="${ROLES.ADMIN}">Administrator</option>
+                        </select>
+                        <p class="text-xs text-slate-500 dark:text-slate-400">Note: Citizen accounts are created via the public signup portal.</p>
+                        ${Button("Create User & Send Invitation", COLORS.primary, "users", "", "w-full", "submit")}
+                    </div>
+                </form>
+            `;
+            showModal("Add New System User", content);
+        }
+        
+        async function handleModalFormSubmit(event, actionType, relatedId = null) {
+            event.preventDefault(); // Handled by delegation, but kept for safety in modals
+            const form = event.target;
+            const formData = {};
+
+            Array.from(form.elements).forEach(element => {
+                if (element.name) {
+                    formData[element.name] = element.value;
+                }
+            });
+
+            if (actionType === 'addResourceModal') {
+                await addResource(formData);
+            } else if (actionType === 'updateStockModal' && relatedId) {
+                const change = parseInt(formData.change);
+                const isDecrease = formData.stockType === 'decrease';
+                const changeAmount = isDecrease ? -Math.abs(change) : Math.abs(change);
+                await updateResourceStock(relatedId, changeAmount);
+            } else if (actionType === 'addUserModal') {
+                await addUser(formData);
+            } else if (actionType === 'assignVolunteerModal' && relatedId) {
+                 await assignVolunteer(relatedId, formData.volunteerId);
+            }
+            
+            closeModal();
+        }
+
+        // --- Main Render Loop ---
+
+        function renderApp() {
+            const appRoot = document.getElementById('app-root');
+
+            if (!state.isReady) {
+                appRoot.innerHTML = renderWelcomeSplash();
+            } else if (!state.role) {
+                appRoot.innerHTML = `
+                    <div class="flex flex-col items-center justify-center min-h-screen w-full p-4">
+                        ${renderLoginScreen()}
+                    </div>
+                `;
+            } else {
+                appRoot.innerHTML = renderSidebar() + renderMainContent();
+            }
+
+            // Important: Re-initialize Lucide icons after DOM update
+            lucide.createIcons();
+            
+            // Re-bind the new slider toggle element after rendering the header
+            const toggleElement = document.getElementById('themeToggle');
+            if (toggleElement) {
+                // Initialize the visual state of the slider
+                const isDark = document.documentElement.classList.contains('dark');
+                toggleElement.classList.toggle('dark', isDark);
+                document.getElementById('theme-label').textContent = isDark ? 'Dark' : 'Light';
+            }
+        }
+
+        // --- FIX: Centralized Form Submission Delegation ---
+        function handleFormSubmissionDelegation(event) {
+            const form = event.target.closest('form');
+            if (!form) return;
+
+            const formType = form.getAttribute('data-form-type');
+            if (!formType) return;
+            
+            event.preventDefault(); // Stop default browser submission behavior
+
+            // Main Forms
+            if (formType === 'citizenLogin') handleCitizenLogin(event);
+            else if (formType === 'incidentReport') handleIncidentSubmit(event);
+            else if (formType === 'reliefRequest') handleReliefRequestSubmit(event);
+            else if (formType === 'settings') handleSettingsSubmit(event);
+            else if (formType === 'logDonation') handleLogDonationSubmit(event);
+
+            // Modal Forms (handled differently as they need the related ID)
+            else if (formType.endsWith('Modal')) {
+                const relatedId = form.getAttribute('data-resource-id') || form.getAttribute('data-request-id') || form.getAttribute('data-form-type');
+                handleModalFormSubmit(event, formType, relatedId);
+            }
+        }
+        
+        // --- Global Exposures (Crucial for inline onclick handlers) ---
+        window.setState = setState; 
+        window.toggleDarkMode = toggleDarkMode;
+        window.handleLogout = handleLogout;
+        window.navigateTo = navigateTo;
+        window.toggleSidebar = toggleSidebar;
+        window.summarizeIncident = summarizeIncident;
+        window.draftAssignmentMessage = draftAssignmentMessage;
+        window.showModal = showModal;
+        window.closeModal = closeModal;
+        window.showUpdateStockModal = showUpdateStockModal;
+        window.showAddResourceModal = showAddResourceModal;
+        window.showAddUserModal = showAddUserModal;
+        window.updateIncidentStatus = updateIncidentStatus; 
+        window.updateRequestStatus = updateRequestStatus; 
+        window.ROLES = ROLES; 
+        window.handleCitizenLogin = handleCitizenLogin; // NEW GLOBAL EXPOSURE
+
+        // Attach delegation listener globally
+        window.addEventListener('submit', handleFormSubmissionDelegation);
+
+
+        // Initial setup on window load
+        window.onload = () => {
+            initializeFirebase();
+
+            // --- Theme initialization is now handled by the inline script in <head> ---
+            
+            // Start the application rendering (will show splash screen first)
+            renderApp(); 
+            
+            // Set timeout to transition from splash screen to login
+            setTimeout(() => {
+                if (!state.isReady) { // Only transition if still on splash screen
+                    setState({ isReady: true });
+                }
+            }, 2000); // 2 second display time
+
+            // Attach resize listener for sidebar
+            window.addEventListener('resize', () => {
+                if (window.innerWidth <= 768 && state.isSidebarOpen) {
+                    setState({ isSidebarOpen: false });
+                } else if (window.innerWidth > 768 && !state.isSidebarOpen) {
+                    setState({ isSidebarOpen: true });
+                }
+            });
+            
+            // Attach a listener to the window for the new slider element since it is rendered late
+            document.body.addEventListener('click', (e) => {
+                if (e.target.closest('#themeToggle')) {
+                    toggleDarkMode();
+                }
+            });
+        };
+    </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DRRMS - Disaster Resource & Relief Management System</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Lucide Icons for professional visuals -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Load Tone.js for optional feedback sound (e.g., notification) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+
+    <!-- NEW: Leaflet for maps -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- NEW: Chart.js for analytics -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        /* Define custom theme colors and typography for Tailwind */
+        :root {
+            --color-primary: #2563EB;
+            --color-secondary: #1E293B;
+            --color-success: #10B981;
+            --color-alert: #EF4444;
+            --color-warning: #F59E0B;
+            /* NEW GLASS VARIABLES */
+            --glass-bg: rgba(255,255,255,0.6);
+            --glass-bg-dark: rgba(17,24,39,0.45);
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            transition: background-color 0.5s ease, color 0.5s ease;
+        }
+
+        /* FIX: Ensure the transition includes margin changes smoothly */
+        .sidebar-transition {
+            /* Keep all properties that change during transition */
+            transition: width 300ms ease-in-out, transform 300ms ease-in-out, margin-left 300ms ease-in-out;
+        }
+
+        /* Mobile overlay for the sidebar */
+        #mobile-overlay {
+            background-color: rgba(15, 23, 42, 0.8); /* slate-900/80 */
+        }
+        
+        /* --- Splash Screen Animation CSS --- */
+        @keyframes splash-fade-in {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes splash-scale-up {
+            from { transform: scale(0.8); }
+            to { transform: scale(1); }
+        }
+        .splash-animation {
+            animation: splash-fade-in 1s ease-out forwards, splash-scale-up 1s ease-out forwards;
+        }
+        .logo-animation {
+            animation: splash-scale-up 1s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+        }
+        
+        /* Loading spinner for API calls */
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #2563EB;
+            border-radius: 50%;
+            width: 1.5rem;
+            height: 1.5rem;
+            animation: spin 1s linear infinite;
+            margin-right: 0.5rem;
+            display: inline-block;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* --- NEW Slider Toggle CSS (from provided structure) --- */
+        .theme-toggle {
+            position: relative;
+            width: 60px;
+            height: 28px;
+            background-color: #e5e7eb; /* gray-200 */
+            border-radius: 9999px;
+            cursor: pointer;
+            transition: background-color 0.4s ease;
+            box-shadow: inset 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+        }
+
+        .theme-toggle.dark {
+            background-color: #475569; /* slate-500 */
+        }
+
+        .toggle-circle {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 24px;
+            height: 24px;
+            background-color: white;
+            border-radius: 50%;
+            transition: transform 0.4s ease;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+        }
+
+        .theme-toggle.dark .toggle-circle {
+            transform: translateX(32px);
+            background-color: #1e293b; /* slate-800 */
+        }
+        
+        /* --- GLASS EFFECT CLASSES --- */
+        .card-bg {
+            background-color: white;
+            border-color: #e5e7eb;
+        }
+        .dark .card-bg {
+            background-color: rgba(30, 41, 59, 0.7); /* slate-800/70 */
+            border-color: #334155; /* slate-700 */
+        }
+
+        /* Fallback for Card/Login container */
+        #app-root > div:nth-child(2) > div {
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            background-color: white;
+            max-width: 512px;
+            margin: auto;
+        }
+        .dark #app-root > div:nth-child(2) > div {
+            background-color: #1f2937 !important;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+            border: 1px solid #374151;
+        }
+
+        /* Map Sizing */
+        #map { height: 60vh; min-height: 320px; border-radius: 0.75rem; overflow:hidden; }
+        
+    </style>
+    <script>
+        // Detect and apply saved or system theme before render (prevents flash of incorrect theme)
+        (() => {
+            const userPref = localStorage.getItem('theme');
+            const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const dark = userPref === 'dark' || (!userPref && systemDark);
+            document.documentElement.classList.toggle('dark', dark);
+            document.documentElement.classList.toggle('light', !dark);
+        })();
+    </script>
+</head>
+<body class="bg-gray-50 dark:bg-slate-900 text-slate-900 dark:text-gray-100 transition-colors duration-500 min-h-screen">
+
+    <div id="app-root" class="flex min-h-screen">
+        <!-- Application will be rendered here by JavaScript -->
+    </div>
+
+    <!-- Modals Container (Hidden by default) -->
+    <div id="modals-root"></div>
+
+    <script type="module">
+        // --- Firebase Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, collection, doc, query, where, onSnapshot, 
+            addDoc, updateDoc, deleteDoc, setDoc, arrayUnion, arrayRemove, 
             getDocs, setLogLevel, getDoc // ADDED getDoc HERE
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -2018,3 +4060,4 @@
     </script>
 </body>
 </html>
+
