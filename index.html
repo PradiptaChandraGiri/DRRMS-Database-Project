@@ -1,14 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
 <!DOCTYPE html>
 <html lang="en" class="light">
 <head>
@@ -173,7 +162,8 @@
     <div id="modals-root"></div>
 
     <script type="module">
-        // --- Firebase Imports ---
+        // --- Firebase Imports (Keeping structure for future implementation, but not used in this mock) ---
+        // These imports must remain for the module structure, even if the DB calls are commented out.
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { 
@@ -182,186 +172,78 @@
             getDocs, setLogLevel, getDoc
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- Firebase Initialization ---
+        // --- Mock Data Mode Setup (Used because Firebase is disabled/failing) ---
         
-        let db, auth;
-        let unsubscribeIncidents, unsubscribeResources, unsubscribeRequests, unsubscribeUsers, unsubscribeDonations;
-        let currentUserId = null;
-        let appId = typeof __app_id !== 'undefined' ? __app_id : 'default-drrms-app';
-        let firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-        // FIX: Corrected variable access to use the global __initial_auth_token safely.
-        let initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; 
-
+        let db = null; // Forces mock data mode
+        let auth = null;
+        let currentUserId = 'C-Anon-Mock';
+        
         // Map and Chart Variables
         let map = null;
         let incidentMarkers = {};
-        let charts = {}; // Store Chart.js instances
+        let charts = {}; 
 
-        // Firestore Collection Paths (Using public shared path)
+        // Mock Firestore Path structure (Not used, but kept for context)
         const PATHS = {
-            incidents: `artifacts/${appId}/public/data/incidents`,
-            resources: `artifacts/${appId}/public/data/resources`,
-            requests: `artifacts/${appId}/public/data/requests`,
-            users: `artifacts/${appId}/public/data/users`,
-            donations: `artifacts/${appId}/public/data/donations`, // NEW PATH
+            incidents: 'mock/incidents',
+            resources: 'mock/resources',
+            requests: 'mock/requests',
+            users: 'mock/users',
+            donations: 'mock/donations', 
+        };
+        
+        // Mock User Data for roles
+        const MOCK_VOLUNTEER_ID = 'V501'; 
+        const ROLES = { ADMIN: 'ADMIN', VOLUNTEER: 'VOLUNTEER', CITIZEN: 'CITIZEN' };
+        
+        let MOCK_DATA = {
+            incidents: [
+                { id: 'I001', type: 'Flood', severity: 'Critical', description: 'Major flooding in downtown area.', location: '123 Main St', status: 'New', reporterId: 'C101', timestamp: Date.now() - 3600000, lat: 22.258, lng: 84.851 }, 
+                { id: 'I002', type: 'Earthquake Damage', severity: 'High', description: 'Structural damage reported near park.', location: '456 Oak Ave', status: 'Under-Review', reporterId: 'C102', timestamp: Date.now() - 7200000, lat: 22.28, lng: 84.88 }, 
+                { id: 'I005', type: 'Medical Emergency', severity: 'Critical', description: 'Hospital overwhelmed.', location: 'City Center', status: 'New', reporterId: 'C105', timestamp: Date.now() - 100000, lat: 22.27, lng: 84.87 },
+            ],
+            resources: [
+                { id: 'R001', type: 'Water Bottles', available: 5000, dispatched: 1200, unit: 'bottles', location: 'Warehouse A', lat: 22.265, lng: 84.855 },
+                { id: 'R002', type: 'Medical Kits', available: 850, dispatched: 150, unit: 'kits', location: 'Depot B', lat: 22.26, lng: 84.84 },
+                { id: 'R003', type: 'Tents (Shelter)', available: 200, dispatched: 50, unit: 'units', location: 'Warehouse A', lat: 22.265, lng: 84.855 },
+            ],
+            requests: [
+                { id: 'Q001', resourceType: 'Water Bottles', quantity: 100, urgency: 'Urgent', location: '123 Main St', status: 'Assigned', assignedTo: MOCK_VOLUNTEER_ID, reporterId: 'C101' },
+                { id: 'Q002', resourceType: 'Medical Kits', quantity: 5, urgency: 'High', location: '456 Oak Ave', status: 'New', assignedTo: null, reporterId: 'C102' },
+                { id: 'Q003', resourceType: 'Tents (Shelter)', quantity: 20, urgency: 'Medium', location: '888 Park Blvd', status: 'Approved', assignedTo: null, reporterId: 'C103' },
+            ],
+            users: [
+                { id: 'U100', name: 'Admin User', role: ROLES.ADMIN, email: 'admin@drrms.org' },
+                { id: MOCK_VOLUNTEER_ID, name: 'Volunteer Bob (V501)', role: ROLES.VOLUNTEER, email: 'bob@drrms.org' },
+                { id: 'C-Anon-Mock', name: 'Current User', role: ROLES.CITIZEN, email: 'guest@drrms.org' },
+            ],
+            donations: [
+                { id: 'D001', organization: 'Red Cross', resourceType: 'Water Bottles', quantity: 1000, date: new Date().toISOString(), loggedBy: 'U100' },
+            ]
         };
 
+        // Mock Firebase initialization structure
         async function initializeFirebase() {
-            try {
-                if (firebaseConfig) {
-                    const app = initializeApp(firebaseConfig);
-                    db = getFirestore(app);
-                    auth = getAuth(app);
-                    setLogLevel('debug'); // Enable detailed logging
-
-                    // 1. Authenticate
-                    try {
-                        if (initialAuthToken) {
-                            await signInWithCustomToken(auth, initialAuthToken);
-                        } else {
-                            await signInAnonymously(auth);
-                        }
-                    } catch (authError) {
-                        // FIX: Catch network errors specifically and failover to guest/mock mode.
-                        console.error("Firebase Auth Network Failure. Falling back to guest/mock mode:", authError);
-                        // If auth fails, we stop data listeners and immediately set ready state.
-                        stopDataListeners();
-                        setState({ isFirebaseReady: true });
-                        return;
-                    }
-
-
-                    // 2. Set Auth State Listener
-                    onAuthStateChanged(auth, (user) => {
-                        if (user) {
-                            currentUserId = user.uid;
-                            // Ensure the user entry exists in our 'users' collection
-                            ensureUserRecord(user.uid, auth.currentUser.email);
-                            startDataListeners();
-                        } else {
-                            currentUserId = null;
-                            stopDataListeners();
-                        }
-                        // FIX: Set the flag AFTER the listener has confirmed the initial auth state.
-                        if (!state.isFirebaseReady) {
-                            setState({ isFirebaseReady: true });
-                        }
-                    });
-
-                } else {
-                    console.error("Firebase configuration is missing. Running as guest/mock.");
-                    setState({ isFirebaseReady: true }); // Immediately enable buttons in mock mode
-                }
-            } catch (error) {
-                console.error("Firebase initialization failed:", error);
-                // If initialization fails completely, enable buttons anyway for UX
-                setState({ isFirebaseReady: true });
-            }
-        }
-
-        async function ensureUserRecord(uid, email) {
-            const userDocRef = doc(db, PATHS.users, uid);
-            const userDoc = await getDoc(userDocRef);
-
-            if (!userDoc.exists()) {
-                // If it's a new anonymous user, give them the citizen role by default
-                await setDoc(userDocRef, {
-                    id: uid,
-                    name: `GuestUser-${uid.substring(0, 6)}`,
-                    email: email || `guest_${uid}@drrms.org`,
-                    role: ROLES.CITIZEN,
-                    createdAt: Date.now(),
-                });
-            }
-        }
-
-        // --- Data Listeners ---
-
-        function startDataListeners() {
-            if (!db) return;
-
-            // Incidents Listener
-            unsubscribeIncidents = onSnapshot(collection(db, PATHS.incidents), (snapshot) => {
-                const incidents = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
-                setState({ incidents: incidents });
-                updateMapMarkers(); // Update map markers on incident change
-                updateCharts();      // Update charts on incident change
+            // Since db is null, we load mock data immediately
+            setState({ 
+                isFirebaseReady: true, 
+                incidents: MOCK_DATA.incidents,
+                resources: MOCK_DATA.resources,
+                requests: MOCK_DATA.requests,
+                users: MOCK_DATA.users,
+                donations: MOCK_DATA.donations,
+                currentUser: MOCK_DATA.users.find(u => u.id === currentUserId)
             });
-
-            // Resources Listener
-            unsubscribeResources = onSnapshot(collection(db, PATHS.resources), (snapshot) => {
-                const resources = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
-                setState({ resources: resources });
-                // If resources are empty, seed initial data for usability
-                if (resources.length === 0) {
-                    seedInitialResources();
-                }
-                updateMapMarkers(); // Update map markers on resource change
-            });
-
-            // Requests Listener
-            unsubscribeRequests = onSnapshot(collection(db, PATHS.requests), (snapshot) => {
-                const requests = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
-                setState({ requests: requests });
-                updateCharts();
-            });
-
-             // Users Listener (for admin view and assignment dropdowns)
-            unsubscribeUsers = onSnapshot(collection(db, PATHS.users), (snapshot) => {
-                const users = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
-                setState({ users: users, 
-                           currentUser: users.find(u => u.id === currentUserId) || state.currentUser });
-                updateCharts();
-            });
-            
-             // Donations Listener (NEW)
-            unsubscribeDonations = onSnapshot(collection(db, PATHS.donations), (snapshot) => {
-                const donations = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
-                setState({ donations: donations });
-            });
+            console.log("Running in MOCK DATA MODE.");
         }
-        
-        function stopDataListeners() {
-            if (unsubscribeIncidents) unsubscribeIncidents();
-            if (unsubscribeResources) unsubscribeResources();
-            if (unsubscribeRequests) unsubscribeRequests();
-            if (unsubscribeUsers) unsubscribeUsers();
-            if (unsubscribeDonations) unsubscribeDonations(); // NEW
-        }
-
-        // --- Data Seeding (Initial Mock Data moved to Firestore Seed) ---
-        async function seedInitialResources() {
-            const initialResources = [
-                // Added Lat/Lng for map functionality (near Rourkela, India)
-                { type: 'Water Bottles', available: 5000, dispatched: 1200, unit: 'bottles', location: 'Warehouse A', lat: 22.25, lng: 84.85 },
-                { type: 'Medical Kits', available: 850, dispatched: 150, unit: 'kits', location: 'Depot B', lat: 22.28, lng: 84.88 },
-                { type: 'Tents (Shelter)', available: 200, dispatched: 50, unit: 'units', location: 'Warehouse A', lat: 22.25, lng: 84.85 },
-            ];
-            
-            for (const res of initialResources) {
-                await addDoc(collection(db, PATHS.resources), res);
-            }
-            console.log("Initial resources seeded to Firestore.");
-        }
-
 
         // --- Global Configuration & State ---
-
-        const ROLES = { 
-            ADMIN: 'ADMIN', 
-            VOLUNTEER: 'VOLUNTEER', 
-            CITIZEN: 'CITIZEN' // Representing the general public/Victims
-        };
         
         // *******************************************************************
         // ********************* ACTION REQUIRED *****************************
         // *******************************************************************
-        // The AI features (Summarize/Draft Message) require a valid Gemini API Key.
-        // You MUST replace the empty string below with your own Gemini API Key 
-        // for those buttons to function.
         const apiKey = ""; // <--- INSERT YOUR GEMINI API KEY HERE
         // *******************************************************************
-        
         const GEMINI_API_URL_BASE = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
         const COLORS = {
@@ -376,18 +258,17 @@
             isReady: false, 
             role: null, 
             currentPage: 'dashboard',
-            // FIX: This initial state is only a placeholder. The real value is read in window.onload.
             isDarkMode: localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches),
             isSidebarOpen: window.innerWidth > 768, 
             
-            // --- Data is now populated by Firestore listeners ---
+            // Data sources initialized with MOCK_DATA
             incidents: [], 
             resources: [],
             requests: [],
             users: [],
-            donations: [], // NEW STATE
+            donations: [],
             currentUser: null,
-            isFirebaseReady: false, // NEW: State flag for authentication readiness
+            isFirebaseReady: false, // Flag is set to true immediately in mock mode
 
             systemSettings: {
                 incidentThreshold: 5,
@@ -401,7 +282,6 @@
 
         // Re-renders the entire application when state changes
         function setState(newState) {
-            // Merge state
             state = { ...state, ...newState };
             
             // If user data changes, update the derived role state
@@ -411,13 +291,10 @@
 
             renderApp();
             
-            // Re-run map/chart updates immediately after rendering to ensure elements exist
+            // FIX: Re-run map/chart updates immediately after rendering to ensure elements exist
             if (state.isReady && state.role) {
-                if (state.currentPage === 'live_map' || state.currentPage === 'dashboard') {
-                    // Only re-init map if it's the live map page
-                    if (state.currentPage === 'live_map') {
-                         setTimeout(initMap, 100);
-                    }
+                if (state.currentPage === 'live_map') {
+                     setTimeout(initMap, 100);
                 }
                 if (state.currentPage === 'analytics_dashboard') {
                     setTimeout(updateCharts, 100);
@@ -575,52 +452,24 @@
         async function handleCitizenLogin(event) {
             event.preventDefault(); 
             
-            if (!state.isFirebaseReady || !currentUserId) {
-                 console.error("Citizen login failed: Firebase not ready or User ID not available.");
+            if (!state.isFirebaseReady) {
+                 console.error("Citizen login failed: Firebase not ready.");
                  return;
             }
             
-            const form = event.target;
-            const email = form['citizen-email'].value;
-            
-            // 1. Ensure the user's record exists/has the correct role
-            await ensureUserRecord(currentUserId, email);
-
-            // 2. Trigger state change to update role and navigate
+            // Simulate Citizen Login by setting the role
             setState({ role: ROLES.CITIZEN, currentPage: 'dashboard' });
-            console.log(`Citizen login simulated for user: ${currentUserId}`);
+            console.log(`Citizen login simulated.`);
         }
         
         function handleLogout() {
-            // FIX: Reinforced state reset to guarantee the application returns to the login screen
-            if (auth) {
-                auth.signOut().then(() => {
-                    // Sign out success
-                    setState({ 
-                        role: null, 
-                        currentPage: 'dashboard', 
-                        isSidebarOpen: window.innerWidth > 768,
-                        currentUser: null
-                    });
-                }).catch((error) => {
-                    // If sign out fails (e.g., no network), still force UI reset
-                    console.error("Firebase SignOut failed, forcing UI reset:", error);
-                    setState({ 
-                        role: null, 
-                        currentPage: 'dashboard', 
-                        isSidebarOpen: window.innerWidth > 768,
-                        currentUser: null
-                    });
-                });
-            } else {
-                    // If auth object isn't defined yet, just reset UI state
-                setState({ 
-                    role: null, 
-                    currentPage: 'dashboard', 
-                    isSidebarOpen: window.innerWidth > 768,
-                    currentUser: null
-                });
-            }
+            // FIX: Robust state reset for mock mode
+            setState({ 
+                role: null, 
+                currentPage: 'dashboard', 
+                isSidebarOpen: window.innerWidth > 768,
+                currentUser: null
+            });
         }
 
         function navigateTo(pageKey) {
@@ -633,22 +482,24 @@
 
         // Incident status update (Admin) 
         async function updateIncidentStatus(id, newStatus) {
-            if (!db) return;
-            const docRef = doc(db, PATHS.incidents, id);
-            await updateDoc(docRef, { status: newStatus });
+            const newIncidents = state.incidents.map(i => 
+                i.id === id ? { ...i, status: newStatus } : i
+            );
+            setState({ incidents: newIncidents });
         }
         
         // Request status update
         async function updateRequestStatus(requestId, newStatus) {
-            if (!db) return;
-            const docRef = doc(db, PATHS.requests, requestId);
-            await updateDoc(docRef, { status: newStatus });
+            const newRequests = state.requests.map(req => 
+                req.id === requestId ? { ...req, status: newStatus } : req
+            );
+            setState({ requests: newRequests });
         }
 
         // AI Incident Summarizer Action
         async function summarizeIncident(incidentId) {
             const incident = state.incidents.find(i => i.id === incidentId);
-            if (!incident || !db) return;
+            if (!incident) return;
 
             const systemPrompt = "You are an emergency operations center AI assistant. Analyze the user's incident report and generate a single, concise, professional one-sentence summary for a quick operational briefing. Focus only on the hazard, location, and immediate operational need (e.g., resources, actions).";
             const userQuery = `Original Incident Report: "${incident.description}"`;
@@ -660,17 +511,15 @@
             
             const { text } = await fetchGemini(userQuery, systemPrompt, false);
             
-            // Update Firestore with new AI summary to persist
-            const docRef = doc(db, PATHS.incidents, incidentId);
-            await updateDoc(docRef, { aiSummary: text });
-            
-            // Firestore listener will handle UI update
+            // Update state with new AI summary 
+            const newIncidents = state.incidents.map(i => i.id === incidentId ? { ...i, aiSummary: text } : i);
+            setState({ incidents: newIncidents });
         }
 
         // AI Draft Assignment Action (Grounding Enabled)
         async function draftAssignmentMessage(requestId) {
             const request = state.requests.find(q => q.id === requestId);
-            if (!request || !db) return;
+            if (!request) return;
 
             // Display loading state
             const elementId = `draft-output-${requestId}`;
@@ -689,99 +538,92 @@
                 draftText += `<div class="mt-2 text-xs text-slate-500 dark:text-gray-500">Source(s) used for advisory: ${sourceList}</div>`;
             }
 
-            // Update Firestore with new AI draft to persist
-            const docRef = doc(db, PATHS.requests, requestId);
-            await updateDoc(docRef, { aiDraft: draftText });
-            
-            // Firestore listener will handle UI update
+            // Update state with new AI draft
+            const newRequests = state.requests.map(q => q.id === requestId ? { ...q, aiDraft: draftText } : q);
+            setState({ requests: newRequests });
         }
 
         // Add New Resource Type (Admin)
         async function addResource(form) {
-            if (!db) return;
             const newResource = {
                 type: form.type,
                 available: parseInt(form.available) || 0,
                 dispatched: 0,
                 unit: form.unit,
                 location: form.location,
+                id: generateId('R'),
+                lat: 22.25 + (Math.random() * 0.1),
+                lng: 84.84 + (Math.random() * 0.05),
             };
-            await addDoc(collection(db, PATHS.resources), newResource);
+            setState({ resources: [newResource, ...state.resources] });
         }
 
         // Update Stock for Existing Resource (Admin)
         async function updateResourceStock(id, changeAmount) {
-            if (!db) return;
-            const docRef = doc(db, PATHS.resources, id);
-            
-            // Use Firestore field increment/decrement if possible, or calculate new value
-            const resource = state.resources.find(r => r.id === id);
-            const newAvailable = Math.max(0, resource.available + changeAmount);
-            
-            await updateDoc(docRef, { available: newAvailable });
+            const newResources = state.resources.map(res => 
+                res.id === id ? { ...res, available: Math.max(0, res.available + changeAmount) } : res
+            );
+            setState({ resources: newResources });
         }
         
         // NEW: Log Organization Donation (Admin)
         async function logOrganizationDonation(formData) {
-            if (!db) return;
             
             const donationData = {
                 organization: formData.organization,
                 resourceType: formData.resourceType,
                 quantity: parseInt(formData.quantity) || 0,
                 date: new Date().toISOString(),
-                loggedBy: currentUserId,
+                loggedBy: 'U100', // Mock Admin User
+                id: generateId('D'),
             };
 
             // 1. Log the Donation
-            await addDoc(collection(db, PATHS.donations), donationData);
+            const newDonations = [...state.donations, donationData];
             
             // 2. Immediately Update Resource Inventory
             const resource = state.resources.find(r => r.type === formData.resourceType);
+            let newResources = state.resources;
             if (resource) {
-                const docRef = doc(db, PATHS.resources, resource.id);
-                // Increase available stock by the donation quantity
-                const newAvailable = resource.available + donationData.quantity;
-                await updateDoc(docRef, { available: newAvailable });
-            } else {
-                console.error(`Resource type ${formData.resourceType} not found for stock update.`);
+                newResources = state.resources.map(r => 
+                    r.id === resource.id ? { ...r, available: r.available + donationData.quantity } : r
+                );
             }
+            
+            setState({ donations: newDonations, resources: newResources });
         }
 
 
         // Add New User (Admin)
         async function addUser(form) {
-            if (!db) return;
-            const user = { 
+            const newUser = { 
                 name: form.name, 
                 email: form.email, 
                 role: form.role,
-                createdAt: Date.now()
+                createdAt: Date.now(),
+                id: generateId('U')
             };
-            // NOTE: For a real app, this would use Firebase Admin SDK to create the user, then save profile data.
-            // Here, we just save the profile data to our collection.
-            await addDoc(collection(db, PATHS.users), user);
+            setState({ users: [...state.users, newUser] });
         }
         
         // Update System Settings (Admin)
         async function updateSystemSettings(newSettings) {
-            // Note: Since settings are simple, we'll store them in local storage/state for simplicity
-            // In a real app, this would be a single document in Firestore.
             setState({ systemSettings: newSettings });
-            console.log("System settings updated (in-memory/local).");
         }
 
         // Relief Request Management (Admin)
         async function updateRequestReview(requestId, newStatus) {
-            if (!db) return;
-            const docRef = doc(db, PATHS.requests, requestId);
-            await updateDoc(docRef, { status: newStatus, assignedTo: null, aiDraft: null });
+            const newRequests = state.requests.map(req => 
+                req.id === requestId ? { ...req, status: newStatus, assignedTo: null, aiDraft: null } : req
+            );
+            setState({ requests: newRequests });
         }
 
         async function assignVolunteer(requestId, volunteerId) {
-            if (!db) return;
-            const docRef = doc(db, PATHS.requests, requestId);
-            await updateDoc(docRef, { assignedTo: volunteerId, status: 'Assigned' });
+            const newRequests = state.requests.map(req => 
+                req.id === requestId ? { ...req, assignedTo: volunteerId, status: 'Assigned' } : req
+            );
+            setState({ requests: newRequests });
         }
         
         // --- MAP FUNCTIONS (New) ---
@@ -812,6 +654,7 @@
 
             } catch (error) {
                 console.error("Error initializing map:", error);
+                mapEl.innerHTML = '<div class="text-red-500 font-semibold p-4">Error: Could not load the map component. Check network connection and Leaflet script.</div>';
             }
         }
 
@@ -821,6 +664,9 @@
             // Clear existing markers
             Object.values(incidentMarkers).forEach(m => map.removeLayer(m));
             incidentMarkers = {};
+            // Clear resource markers too
+            Object.values(resourceMarkers).forEach(m => map.removeLayer(m));
+            resourceMarkers = {};
 
             // Add Incident Markers
             state.incidents.forEach(i => {
@@ -839,7 +685,7 @@
                 }
             });
 
-            // Add Resource Hub Markers (Simulated)
+            // Add Resource Hub Markers
             const resourceHubs = state.resources.filter(r => r.lat && r.lng);
             resourceHubs.forEach(r => {
                 const customIcon = L.divIcon({
@@ -850,10 +696,27 @@
                 });
                 const marker = L.marker([r.lat, r.lng], { icon: customIcon }).addTo(map);
                 marker.bindPopup(`<strong>Resource Hub: ${r.location}</strong><br>Available: ${r.available} ${r.unit}`);
+                resourceMarkers[r.id] = marker;
             });
             
             // Re-render Lucide icons for the custom map markers
             lucide.createIcons();
+        }
+
+        // Map helpers (for live_map page buttons)
+        function fitAllMarkers(){
+            const allLatLng = [];
+            Object.values(incidentMarkers).forEach(m => allLatLng.push(m.getLatLng()));
+            Object.values(resourceMarkers).forEach(m => allLatLng.push(m.getLatLng()));
+            if(allLatLng.length) map.fitBounds(allLatLng, { padding:[40,40] });
+        }
+        function centerOnIncidents(){
+            const latlngs = Object.values(incidentMarkers).map(m=>m.getLatLng());
+            if(latlngs.length) map.fitBounds(latlngs, { padding:[30,30] });
+        }
+        function centerOnResources(){
+            const latlngs = Object.values(resourceMarkers).map(m=>m.getLatLng());
+            if(latlngs.length) map.fitBounds(latlngs, { padding:[30,30] });
         }
 
         // --- CHART FUNCTIONS (New) ---
@@ -911,7 +774,7 @@
                     .filter(u => u.role === ROLES.VOLUNTEER)
                     .map(v => ({
                         name: v.name,
-                        count: state.requests.filter(r => r.assignedTo === v.id && r.status !== 'Delivered').length,
+                        count: state.requests.filter(r => r.assignedTo === v.id).length,
                     }));
 
                 const labels = volunteerWorkload.map(w => w.name);
@@ -1441,7 +1304,7 @@
         }
         
         function renderUserManagement() {
-            const sortedUsers = state.users.slice().sort((a, b) => a.role.localeCompare(b.role));
+            const sortedUsers = [...state.users].sort((a, b) => a.role.localeCompare(b.role));
             const userList = sortedUsers.map(user => `
                 <li class="flex justify-between items-center p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700/50 transition">
                     <div>
@@ -1545,7 +1408,7 @@
 
         // NEW: Function for Volunteer Assigned Requests
         function renderVolunteerAssignedRequests() {
-            const assignedRequests = state.requests.filter(q => q.assignedTo === currentUserId && q.status !== 'Delivered' && q.status !== 'Declined');
+            const assignedRequests = state.requests.filter(q => q.assignedTo === MOCK_VOLUNTEER_ID && q.status !== 'Delivered' && q.status !== 'Declined');
             const requestItems = assignedRequests.map(req => {
                 const isEnRoute = req.status === 'en route';
                 
@@ -1708,8 +1571,8 @@
         }
         
         function renderCitizenMyActivity() {
-            const myIncidents = state.incidents.filter(i => i.reporterId === currentUserId);
-            const myRequests = state.requests.filter(q => q.reporterId === currentUserId);
+            const myIncidents = state.incidents.filter(i => i.reporterId === 'C101');
+            const myRequests = state.requests.filter(q => q.reporterId === 'C101');
             
             const incidentItems = myIncidents.length === 0 ? 
                 `<p class="text-slate-500 dark:text-gray-400">You have no submitted reports.</p>` :
@@ -1747,7 +1610,7 @@
         // --- Event Listener Handlers (REMAINS AS IS) ---
 
         function handleSettingsSubmit(event) {
-            // event.preventDefault() is handled by delegation system
+            event.preventDefault();
             const form = event.target;
             const newSettings = {
                 incidentThreshold: parseInt(form.incidentThreshold.value),
@@ -1759,8 +1622,8 @@
             navigateTo('dashboard');
         }
 
-        async function handleIncidentSubmit(event) {
-            // event.preventDefault() is handled by delegation system
+        function handleIncidentSubmit(event) {
+            event.preventDefault();
             const form = event.target;
             
             const newIncident = {
@@ -1778,20 +1641,21 @@
             const incidentData = {
                 ...newIncident,
                 status: 'New',
-                reporterId: currentUserId || 'C-Anon', 
+                reporterId: 'C101', 
                 timestamp: Date.now(),
+                 id: generateId('I'),
+                 lat: 22.25 + (Math.random() * 0.1),
+                 lng: 84.84 + (Math.random() * 0.05),
             };
             
-            if (db) {
-                await addDoc(collection(db, PATHS.incidents), incidentData);
-            }
+            setState({ incidents: [incidentData, ...state.incidents] });
             
             navigateTo('dashboard');
             console.log(`Incident Reported: ${newIncident.type} at ${newIncident.location}`);
         }
 
-        async function handleReliefRequestSubmit(event) {
-            // event.preventDefault() is handled by delegation system
+        function handleReliefRequestSubmit(event) {
+            event.preventDefault();
             const form = event.target;
             const newRequest = {
                 resourceType: form.resourceType.value,
@@ -1804,20 +1668,19 @@
                 ...newRequest,
                 status: 'New',
                 assignedTo: null, 
-                reporterId: currentUserId || 'C-Anon', 
+                reporterId: 'C101', 
                 timestamp: Date.now(),
+                id: generateId('Q')
             };
 
-            if (db) {
-                await addDoc(collection(db, PATHS.requests), requestData);
-            }
+            setState({ requests: [...state.requests, requestData] });
             
             navigateTo('dashboard');
             console.log(`Relief Request Submitted: ${newRequest.resourceType} x ${newRequest.quantity}`);
         }
 
-        async function handleLogDonationSubmit(event) {
-            // event.preventDefault() is handled by delegation system
+        function handleLogDonationSubmit(event) {
+            event.preventDefault();
             const form = event.target;
             const formData = {
                 organization: form.organization.value,
@@ -1830,7 +1693,28 @@
                 return;
             }
 
-            await logOrganizationDonation(formData);
+            // Mock log organization donation
+            const donationData = {
+                organization: formData.organization,
+                resourceType: formData.resourceType,
+                quantity: parseInt(formData.quantity) || 0,
+                date: new Date().toISOString(),
+                loggedBy: 'U100', 
+                id: generateId('D'),
+            };
+
+            const newDonations = [...state.donations, donationData];
+            
+            // Immediately Update Resource Inventory
+            const resource = state.resources.find(r => r.type === formData.resourceType);
+            let newResources = state.resources;
+            if (resource) {
+                newResources = state.resources.map(r => 
+                    r.id === resource.id ? { ...r, available: r.available + donationData.quantity } : r
+                );
+            }
+            
+            setState({ donations: newDonations, resources: newResources });
             navigateTo('resource_inventory'); // Go to inventory to see the stock update
             console.log(`Donation Logged: ${formData.organization} donated ${formData.quantity} of ${formData.resourceType}`);
         }
@@ -1914,7 +1798,7 @@
         }
         
         async function handleModalFormSubmit(event, actionType, relatedId = null) {
-            event.preventDefault(); // Handled by delegation, but kept for safety in modals
+            event.preventDefault(); 
             const form = event.target;
             const formData = {};
 
@@ -1927,16 +1811,16 @@
             if (actionType === 'addResourceModal') {
                 // Ensure number fields are parsed correctly
                 formData.available = parseInt(formData.available) || 0;
-                await addResource(formData);
+                addResource(formData);
             } else if (actionType === 'updateStockModal' && relatedId) {
                 const change = parseInt(formData.change);
                 const isDecrease = formData.stockType === 'decrease';
                 const changeAmount = isDecrease ? -Math.abs(change) : Math.abs(change);
-                await updateResourceStock(relatedId, changeAmount);
+                updateResourceStock(relatedId, changeAmount);
             } else if (actionType === 'addUserModal') {
-                await addUser(formData);
+                addUser(formData);
             } else if (actionType === 'assignVolunteerModal' && relatedId) {
-                 await assignVolunteer(relatedId, formData.volunteerId);
+                 assignVolunteer(relatedId, formData.volunteerId);
             }
             
             closeModal();
@@ -1947,9 +1831,7 @@
         function renderApp() {
             const appRoot = document.getElementById('app-root');
 
-            if (!state.isReady) {
-                appRoot.innerHTML = renderWelcomeSplash();
-            } else if (!state.role) {
+            if (!state.role) {
                 appRoot.innerHTML = `
                     <div class="flex flex-col items-center justify-center min-h-screen w-full p-4">
                         ${renderLoginScreen()}
@@ -2020,9 +1902,8 @@
 
         // Initial setup on window load
         window.onload = () => {
-            initializeFirebase();
-
-            // --- Theme initialization is now handled by the inline script in <head> ---
+            // Mock initialization
+            initializeFirebase(); 
             
             // Start the application rendering (will show splash screen first)
             renderApp(); 
